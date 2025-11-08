@@ -21,6 +21,7 @@ jobs:
       fail-fast: false
 
     steps:
+      # 1. 拉取Skia源码（含所有子模块）
       - name: Checkout Skia source
         uses: actions/checkout@v4
         with:
@@ -29,37 +30,38 @@ jobs:
           fetch-depth: 0
           clean: true
 
-      # 修复点1: 直接使用预装的 VS 2022 (无需安装)
-      - name: Setup Visual Studio Environment
-        shell: powershell
+      # 2. 安装VS Build Tools（使用微软官方脚本，解决环境变量问题）
+      - name: Install Visual Studio Build Tools
         run: |
-          # GitHub Actions windows-2022 环境已预装 VS 2022
-          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build"
-          if (-not (Test-Path $vsPath)) {
-            Write-Error "VS 2022 not found at $vsPath. Expected in windows-2022 image."
-            exit 1
-          }
-          
-          # 添加到 PATH (GitHub Actions 特定方式)
-          Write-Host "##[add-path]$vsPath"
-          $env:PATH = "$vsPath;$env:PATH"
-          
-          # 验证关键工具存在
-          if (-not (Get-Command vcvarsall.bat -ErrorAction SilentlyContinue)) {
-            Write-Error "vcvarsall.bat not found in PATH"
-            exit 1
-          }
+          $vsInstallerUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
+          $installerPath = "$env:TEMP\vs_BuildTools.exe"
+          Invoke-WebRequest -Uri $vsInstallerUrl -OutFile $installerPath
 
+          # 安装VCTools工作负载（C++编译核心依赖）
+          & $installerPath --quiet --wait --norestart --nocache `
+            --installPath "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools" `
+            --add Microsoft.VisualStudio.Workload.VCTools `
+            --includeRecommended `
+            --passive
+
+          # 强制刷新环境变量
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          Write-Host "Refreshed PATH: $env:Path"
+        shell: powershell
+
+      # 3. 安装Python 3.11
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
+      # 4. 安装Ninja
       - name: Install Ninja
         run: pip install ninja
         shell: cmd
 
+      # 5. 构建GN工具（Skia原生构建系统）
       - name: Build GN Tool
         working-directory: third_party\gn
         shell: cmd
@@ -67,10 +69,12 @@ jobs:
           python build/gen.py --no-last-commit-position
           ninja -C out
 
-      - name: Verify GN
+      # 6. 验证GN工具安装
+      - name: Verify GN Installation
         run: third_party\gn\out\gn --version
         shell: cmd
 
+      # 7. 配置GN编译参数（区分Debug/Release）
       - name: Configure GN Args (${{ matrix.config }})
         shell: powershell
         run: |
@@ -106,15 +110,19 @@ jobs:
           win_sdk_version="10.0.22621.0"
           "@
           
+          Write-Output "GN Args:"
+          Write-Output $gnArgs
           ./third_party/gn/out/gn.exe gen out/$config --args=$gnArgs
 
-      - name: Build Skia static lib (${{ matrix.config }})
+      # 8. 编译Skia静态库（限制并发数防止内存溢出）
+      - name: Build Skia Static Lib (${{ matrix.config }})
         shell: cmd
         run: |
-          call vcvarsall.bat amd64
+          set PATH=%PATH%;third_party\gn\out
           ninja -C out/${{ matrix.config }} -j 4
         timeout-minutes: 60
 
+      # 9. 验证编译产物存在性
       - name: Verify Build Outputs (${{ matrix.config }})
         shell: powershell
         run: |
@@ -127,7 +135,9 @@ jobs:
             exit 1
           }
           Write-Host "✅ Found skia.lib at $libPath"
+          Write-Host "Size: $(Get-Item $libPath).Length bytes"
 
+      # 10. 打包静态库和头文件
       - name: Package ${{ matrix.config }}
         shell: powershell
         run: |
@@ -137,12 +147,13 @@ jobs:
           
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           Copy-Item $libPath -Destination "$outDir/skia.lib"
-          robocopy "include" "$outDir/include" /E /NJH /NJS /NFL /NDL | Out-Null
+          robocopy "include" "$outDir/include" /E /NJH /NJS /NFL /NDL
           
           "Skia chrome/m142 static build" | Out-File "$outDir/VERSION.txt"
           "Config: $config" | Out-File -Append "$outDir/VERSION.txt"
           Get-Date -Format "yyyy-MM-dd HH:mm" | Out-File -Append "$outDir/VERSION.txt"
 
+      # 11. 上传编译产物（保留30天）
       - name: Upload Artifact ${{ matrix.config }}
         uses: actions/upload-artifact@v4
         with:
