@@ -14,41 +14,66 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022  # 明确指定最新Windows环境
     strategy:
       matrix:
         config: [Debug, Release]
+      fail-fast: false  # 一个配置失败不影响另一个
 
     steps:
-      # 1. 拉取 Skia chrome/m142 分支（含所有子模块）
+      # 1. 拉取代码（关键修复：清理工作目录）
       - name: Checkout Skia source
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.skia_branch || 'chrome/m142' }}
-          submodules: recursive  # 必须拉取所有子模块，否则编译失败
+          submodules: recursive
           fetch-depth: 0
-          clean: true
+          clean: true  # 确保干净的工作目录
 
-      # 2. 安装 Python 3.11（GN 依赖）
-      - name: Install Python 3.11
+      # 2. 安装构建依赖（关键：安装VS构建工具）
+      - name: Install Build Tools
+        run: |
+          choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -y
+          refreshenv
+        shell: powershell
+
+      # 3. 安装 Python 3.11
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
-      # 3. 编译 GN 工具（Skia 内置构建工具）
+      # 4. 安装 Ninja（关键：显式安装避免依赖问题）
+      - name: Install Ninja
+        run: pip install ninja
+        shell: cmd
+
+      # 5. 修复GN构建（核心问题解决方案）
       - name: Build GN Tool
-        working-directory: ./third_party/gn
+        working-directory: third_party\gn  # 关键：Windows反斜杠路径
+        shell: cmd  # 关键：使用CMD避免PowerShell路径问题
         run: |
-          python build/gen.py
+          python build/gen.py --no-last-commit-position
           ninja -C out
 
-      # 4. 配置 GN 参数（适配 Windows 静态库 + UI 高级功能）
-      - name: Configure GN Args
-        working-directory: .
+      # 6. 验证GN安装
+      - name: Verify GN
+        run: third_party\gn\out\gn --version
+        shell: cmd
+
+      # 7. 配置GN参数（增强：添加详细日志）
+      - name: Configure GN Args (${{ matrix.config }})
+        shell: powershell
         run: |
+          $config = "${{ matrix.config }}"
+          $isDebug = $config -eq "Debug"
+          $optimize = if ($isDebug) { "none" } else { "speed" }
+          $runtime = if ($isDebug) { "/MTd" } else { "/MT" }
+          
           $gnArgs = @"
-          is_debug=$(${{ matrix.config }} -eq 'Debug')
-          is_official_build=$(${{ matrix.config }} -eq 'Release')
+          is_debug=$isDebug
+          is_official_build=$(!$isDebug)
           target_os="windows"
           target_cpu="x64"
           is_component_build=false
@@ -56,7 +81,7 @@ jobs:
           skia_enable_gpu=true
           skia_use_direct3d=true
           d3d11_enabled=true
-          skia_use_system_libjpeg=false  # 优先用 Skia 内置依赖（避免版本冲突）
+          skia_use_system_libjpeg=false
           skia_use_system_libpng=false
           skia_use_system_zlib=false
           skia_use_system_freetype2=false
@@ -68,31 +93,59 @@ jobs:
           skia_enable_paragraph=true
           skia_enable_effects=true
           skia_enable_filters=true
-          optimize="$(${{ matrix.config }} -eq 'Release' ? 'speed' : 'none')"
-          extra_cflags=["/MT$(${{ matrix.config }} -eq 'Debug' ? 'd' : '')"]
+          optimize="$optimize"
+          extra_cflags=["$runtime"]
+          win_sdk_version="10.0.22621.0"  # 明确指定SDK版本
           "@
-          ./third_party/gn/out/gn gen out/${{ matrix.config }} --args=$gnArgs
+          
+          Write-Output "GN Args:"
+          Write-Output $gnArgs
+          ./third_party/gn/out/gn.exe gen out/$config --args=$gnArgs
 
-      # 5. Ninja 编译 Skia 静态库
-      - name: Build Skia static lib
-        working-directory: .
+      # 8. 编译Skia（添加超时保护）
+      - name: Build Skia static lib (${{ matrix.config }})
+        shell: cmd
         run: |
-          ninja -C out/${{ matrix.config }}
+          set PATH=%PATH%;third_party\gn\out
+          ninja -C out/${{ matrix.config }} -j 4  # 限制并发避免内存溢出
+        timeout-minutes: 60  # 防止无限卡住
 
-      # 6. 打包静态库 + 头文件
+      # 9. 验证编译结果
+      - name: Verify Build Outputs (${{ matrix.config }})
+        shell: powershell
+        run: |
+          $config = "${{ matrix.config }}"
+          $libPath = "out/$config/skia.lib"
+          
+          if (-not (Test-Path $libPath)) {
+            Write-Error "skia.lib not found at $libPath"
+            Get-ChildItem out/$config -Recurse | Format-List
+            exit 1
+          }
+          Write-Host "✅ Found skia.lib at $libPath"
+          Write-Host "Size: $(Get-Item $libPath).Length bytes"
+
+      # 10. 打包产物
       - name: Package ${{ matrix.config }}
-        working-directory: .
+        shell: powershell
         run: |
-          $outDir = "package/${{ matrix.config }}"
+          $config = "${{ matrix.config }}"
+          $outDir = "package/$config"
+          $libPath = "out/$config/skia.lib"
+          
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-          $skiaLib = Get-ChildItem -Path out/${{ matrix.config }} -Filter "skia.lib" -Recurse | Select-Object -First 1
-          if ($skiaLib -eq $null) { throw "Cannot find skia static lib after build." }
-          Copy-Item $skiaLib.FullName -Destination "$outDir/skia.lib" -ErrorAction Stop
-          robocopy "include" "$outDir/include" /E /NP /NFL /NDL | Out-Null
+          Copy-Item $libPath -Destination "$outDir/skia.lib"
+          robocopy "include" "$outDir/include" /E /NJH /NJS /NFL /NDL
+          
+          # 生成版本信息
+          "Skia chrome/m142 static build" | Out-File "$outDir/VERSION.txt"
+          "Config: $config" | Out-File -Append "$outDir/VERSION.txt"
+          Get-Date -Format "yyyy-MM-dd HH:mm" | Out-File -Append "$outDir/VERSION.txt"
 
-      # 7. 上传产物
+      # 11. 上传产物
       - name: Upload Artifact ${{ matrix.config }}
         uses: actions/upload-artifact@v4
         with:
           name: skia-windows-x64-static-${{ matrix.config }}-m142
           path: package/${{ matrix.config }}
+          retention-days: 30
