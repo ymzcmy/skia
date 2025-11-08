@@ -1,16 +1,16 @@
-name: Skia Static Build (Windows x64 Debug & Release, m142, UI Advanced, No DLL)
+name: Skia Static Build (Windows x64 Debug & Release, chrome/m142, UI Advanced, No DLL)
 
 on:
   workflow_dispatch:
     inputs:
-      skia_version:
-        description: 'Skia tag/branch to build'
+      skia_branch:
+        description: 'Skia branch to build (e.g., chrome/m142)'
         required: false
-        default: 'm142'
+        default: 'chrome/m142'
   push:
-    branches: [ chrome/m142]
+    branches: [ chrome/m142 ]
   pull_request:
-    branches: [ chrome/m142]
+    branches: [ chrome/m142 ]
 
 jobs:
   build-windows:
@@ -20,89 +20,77 @@ jobs:
         config: [Debug, Release]
 
     steps:
-      # 1. 拉取指定版本 Skia
+      # 1. 拉取 Skia chrome/m142 分支（含所有子模块）
       - name: Checkout Skia source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.skia_version || 'm142' }}
-          submodules: false
+          ref: ${{ github.event.inputs.skia_branch || 'chrome/m142' }}
+          submodules: recursive  # 必须拉取所有子模块，否则编译失败
           fetch-depth: 0
           clean: true
 
-      # 2. 安装 Ninja
-      - name: Install Ninja
-        shell: pwsh
-        run: choco install -y ninja --no-progress
+      # 2. 安装 Python 3.11（GN 依赖）
+      - name: Install Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      # 3. 安装 vcpkg（用于第三方静态库，首次自助安装）
-      - name: Setup vcpkg
-        shell: pwsh
+      # 3. 编译 GN 工具（Skia 内置构建工具）
+      - name: Build GN Tool
+        working-directory: ./third_party/gn
         run: |
-          $vcpkgRoot = "C:\vcpkg"
-          if (-not (Test-Path $vcpkgRoot)) {
-            git clone https://github.com/microsoft/vcpkg $vcpkgRoot
-            & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
-          }
+          python build/gen.py
+          ninja -C out
 
-      # 4. 用 vcpkg 安装必需库（静态，无 DLL，无 webp）
-      - name: Install system libraries via vcpkg
-        shell: pwsh
+      # 4. 配置 GN 参数（适配 Windows 静态库 + UI 高级功能）
+      - name: Configure GN Args
+        working-directory: .
         run: |
-          & "C:\vcpkg\vcpkg.exe" install `
-            libjpeg-turbo:x64-windows-static `
-            libpng:x64-windows-static `
-            freetype:x64-windows-static `
-            harfbuzz:x64-windows-static `
-            zlib:x64-windows-static `
-            --triplet x64-windows-static
+          $gnArgs = @"
+          is_debug=$(${{ matrix.config }} -eq 'Debug')
+          is_official_build=$(${{ matrix.config }} -eq 'Release')
+          target_os="windows"
+          target_cpu="x64"
+          is_component_build=false
+          is_static_lib=true
+          skia_enable_gpu=true
+          skia_use_direct3d=true
+          d3d11_enabled=true
+          skia_use_system_libjpeg=false  # 优先用 Skia 内置依赖（避免版本冲突）
+          skia_use_system_libpng=false
+          skia_use_system_zlib=false
+          skia_use_system_freetype2=false
+          skia_use_system_harfbuzz=false
+          skia_use_system_webp=false
+          skia_enable_svg=true
+          skia_enable_skottie=true
+          skia_enable_skshaper=true
+          skia_enable_paragraph=true
+          skia_enable_effects=true
+          skia_enable_filters=true
+          optimize="$(${{ matrix.config }} -eq 'Release' ? 'speed' : 'none')"
+          extra_cflags=["/MT$(${{ matrix.config }} -eq 'Debug' ? 'd' : '')"]
+          "@
+          ./third_party/gn/out/gn gen out/${{ matrix.config }} --args=$gnArgs
 
-      # 5. CMake 配置 Skia，支持高级UI+GPU
-      - name: Configure Skia via CMake
-        shell: pwsh
-        run: |
-          mkdir build
-          cd build
-          cmake .. -G "Ninja" `
-            -DSKIA_BUILD_FOR_WIN=ON `
-            -DSKIA_BUILD_SHARED_LIBS=OFF `
-            -DSKIA_ENABLE_GPU=ON `
-            -DSKIA_USE_SYSTEM_LIBJPEG=ON `
-            -DSKIA_USE_SYSTEM_LIBPNG=ON `
-            -DSKIA_USE_SYSTEM_ZLIB=ON `
-            -DSKIA_USE_SYSTEM_FREETYPE=ON `
-            -DSKIA_USE_SYSTEM_HARFBUZZ=ON `
-            -DSKIA_USE_SYSTEM_WEBP=OFF `
-            -DSKIA_ENABLE_SVG=ON `
-            -DCMAKE_BUILD_TYPE=${{ matrix.config }} `
-            -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-            -DSKIA_ENABLE_SKOTTIE=ON `
-            -DSKIA_ENABLE_DND=ON `
-            -DSKIA_ENABLE_SKSHAPER=ON `
-            -DSKIA_ENABLE_PARAGRAPH=ON `
-            -DSKIA_ENABLE_EFFECTS=ON `
-            -DSKIA_ENABLE_FILTERS=ON
-
-      # 6. Ninja 编译 Skia 静态库
+      # 5. Ninja 编译 Skia 静态库
       - name: Build Skia static lib
-        shell: pwsh
+        working-directory: .
         run: |
-          cd build
-          ninja
+          ninja -C out/${{ matrix.config }}
 
-      # 7. 打包静态库+头文件
+      # 6. 打包静态库 + 头文件
       - name: Package ${{ matrix.config }}
-        shell: pwsh
+        working-directory: .
         run: |
           $outDir = "package/${{ matrix.config }}"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-          # Skia主库名以实际输出为准（一般为 skia.lib 或 libskia.a 或 skia_static.lib）
-          $skiaLib = Get-ChildItem -Path build -Filter "*skia*.lib" | Select-Object -First 1
+          $skiaLib = Get-ChildItem -Path out/${{ matrix.config }} -Filter "skia.lib" -Recurse | Select-Object -First 1
           if ($skiaLib -eq $null) { throw "Cannot find skia static lib after build." }
           Copy-Item $skiaLib.FullName -Destination "$outDir/skia.lib" -ErrorAction Stop
           robocopy "include" "$outDir/include" /E /NP /NFL /NDL | Out-Null
-        continue-on-error: true
 
-      # 8. 上传产物
+      # 7. 上传产物
       - name: Upload Artifact ${{ matrix.config }}
         uses: actions/upload-artifact@v4
         with:
