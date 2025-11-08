@@ -8,9 +8,9 @@ on:
         required: false
         default: 'm142'
   push:
-    branches: [main]
+    branches: [ chrome/m142]
   pull_request:
-    branches: [main]
+    branches: [ chrome/m142]
 
 jobs:
   build-windows:
