@@ -38,7 +38,6 @@ env:
     skia_use_xps=false
     skia_enable_gpu=false
     skia_use_angle=false
-  # 固定 Release 名称 (每次覆盖更新)
   RELEASE_NAME: "Skia-m142-Nightly-Windows"
 
 jobs:
@@ -68,60 +67,75 @@ jobs:
           curl -Lo llvm.exe ${{ env.LLVM_URL }}
           ./llvm.exe /S /D="C:\Program Files\LLVM"
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
-          # 验证安装
           clang-cl --version
 
-      # ===== 关键修复：环境变量 + 防御性脚本创建 =====
-      - name: 设置 NO_EMSCRIPTEN 环境变量 (安全传递)
+      # ===== 终极修复：创建防御性脚本 =====
+      - name: 设置 NO_EMSCRIPTEN 环境变量 (终极防御)
         shell: pwsh
         working-directory: skia
         run: |
-          # 1. 设置进程级环境变量 (最可靠方式)
+          # 1. 设置进程级环境变量
           [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
-          Write-Host "✅ NO_EMSCRIPTEN 环境变量已设置 (进程级)"
+          Write-Host "✅ NO_EMSCRIPTEN = 1 (进程级)"
           
-          # 2. 创建防御性空脚本 (防止调用失败)
+          # 2. 创建防御性脚本 (总是成功退出)
           $binPath = Join-Path -Path $pwd -ChildPath "bin"
-          $scripts = @("activate-emsdk", "activate-emsdk.bat", "activate-emsdk.ps1")
+          $scripts = @(
+            @{Name = "activate-emsdk"; Content = "exit 0"},
+            @{Name = "activate-emsdk.bat"; Content = "@echo off`nexit /b 0"},
+            @{Name = "activate-emsdk.ps1"; Content = "Write-Host 'Defensive script active'; exit 0"}
+          )
           
           foreach ($script in $scripts) {
-            $scriptPath = Join-Path -Path $binPath -ChildPath $script
-            if (-not (Test-Path $scriptPath)) {
-              # 创建 0 字节空文件
-              "" | Out-File -FilePath $scriptPath -Encoding utf8 -Force
-              Write-Host "🛡️  创建防御性空文件: $scriptPath"
-            }
-            else {
-              Write-Host "✅ 文件已存在: $scriptPath"
-            }
+            $scriptPath = Join-Path -Path $binPath -ChildPath $script.Name
+            $script.Content | Out-File -FilePath $scriptPath -Encoding utf8 -Force
+            Write-Host "🛡️  创建防御脚本: $scriptPath"
+            Write-Host "   内容: '$($script.Content)'"
           }
           
-          # 3. 验证环境变量
-          Write-Host "当前环境变量:"
-          Get-ChildItem env:NO_EMSCRIPTEN
+          # 3. 验证脚本可执行性
+          foreach ($script in $scripts) {
+            $scriptPath = Join-Path -Path $binPath -ChildPath $script.Name
+            & $scriptPath
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "✅ 脚本测试成功: $scriptPath (退出码 0)" -ForegroundColor Green
+            }
+            else {
+              Write-Error "❌ 脚本测试失败: $scriptPath (退出码 $LASTEXITCODE)"
+              exit 1
+            }
+          }
 
-      # ===== 修复同步步骤 (使用 PowerShell 确保环境变量传递) =====
-      - name: 同步第三方依赖 (强制跳过 emsdk)
+      # ===== 修复同步步骤 (关键) =====
+      - name: 同步第三方依赖 (终极防御)
         working-directory: skia
         shell: pwsh
         run: |
-          # 再次设置环境变量 (双重保险)
+          # 显式设置环境变量
           $env:NO_EMSCRIPTEN = "1"
-          Write-Host "同步前验证: NO_EMSCRIPTEN = $env:NO_EMSCRIPTEN"
+          Write-Host "✅ NO_EMSCRIPTEN = $env:NO_EMSCRIPTEN"
           
-          # 使用绝对路径调用 Python (GitHub Actions 固定路径)
+          # 使用绝对路径调用 Python
           $python = "C:\hostedtoolcache\windows\Python\3.9.13\x64\python.exe"
           if (-not (Test-Path $python)) {
-            Write-Error "Python 未找到! 路径: $python"
+            Write-Error "❌ Python 未找到! 路径: $python"
             exit 1
           }
           
           # 执行同步命令 (添加详细日志)
-          & $python tools\git-sync-deps --deps-target=win --verbose
+          $cmd = "$python tools\git-sync-deps --deps-target=win --verbose"
+          Write-Host "➡️ 执行命令: $cmd"
+          Invoke-Expression $cmd
+          
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "依赖同步失败! 退出码: $LASTEXITCODE"
+            Write-Error "❌ 依赖同步失败! 退出码: $LASTEXITCODE"
             exit $LASTEXITCODE
           }
+          else {
+            Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
+          }
+
+      # ... [后续步骤保持不变] ...
 
       - name: 生成 GN 构建参数
         shell: pwsh
@@ -153,29 +167,19 @@ jobs:
           $config = "${{ matrix.config }}"
           $dst = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-${config}"
           
-          # 创建目录结构
           New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           
-          # 复制头文件 (忽略文件名差异)
           robocopy "include" "$dst\include" /E /NP /NFL /NDL /R:1 /W:1
           if ($LASTEXITCODE -gt 7) { 
             Write-Error "头文件复制失败 (错误码: $LASTEXITCODE)"; exit $LASTEXITCODE 
           }
           
-          # 复制库文件和元数据
-          $libFiles = Get-ChildItem -Path "out\${config}\*.lib" -Recurse
-          foreach ($file in $libFiles) {
-            Copy-Item $file.FullName -Destination "$dst\lib" -Force
-            Write-Host "📄 已复制: $($file.Name)"
-          }
-          
+          Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
           Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
           Copy-Item "LICENSE" -Destination "$dst" -Force
           
-          # 创建 ZIP 归档
           Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
-          Write-Host "📦 产物已打包: ${dst}.zip"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -183,17 +187,12 @@ jobs:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}
           path: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
 
-      # ===== 每次成功构建后覆盖更新固定 Release =====
       - name: 上传到固定 Release (覆盖更新)
-        # 仅在 main 分支的 push 事件或手动触发时上传
         if: (github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v1
         with:
-          # 指定固定 Release 名称 (会覆盖同名 Release)
           name: ${{ env.RELEASE_NAME }}
-          # 覆盖更新已有 Release
           update: true
-          # 附加构建信息
           body: |
             **自动构建产物**  
             - 分支: `${{ github.ref_name }}`  
