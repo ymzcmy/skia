@@ -2,9 +2,9 @@ name: Build Skia M142 Static Libraries with LLVM
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ chrome/m142 ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ chrome/m142 ]
   workflow_dispatch:  # 允许手动触发
 
 env:
