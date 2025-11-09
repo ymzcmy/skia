@@ -58,13 +58,14 @@ jobs:
           7z x depot_tools.zip -o"C:\depot_tools" -y
           echo "C:\depot_tools" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
           cd C:\depot_tools
-          git checkout main  # 切换到默认分支
-          git pull           # 更新到最新版本
+          git checkout main
+          git pull
 
       - name: Install LLVM (silent install)
         run: |
           curl -Lo llvm.exe ${{ env.LLVM_URL }}
-          llvm.exe /S /D="C:\Program Files\LLVM"
+          # 显式指定当前目录下的 llvm.exe 执行安装
+          ./llvm.exe /S /D="C:\Program Files\LLVM"
           echo "C:\Program Files\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
       - name: Sync third-party dependencies (skip emsdk)
