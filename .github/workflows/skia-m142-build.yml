@@ -282,7 +282,7 @@ jobs:
             "jpeg.lib",
             "libpng16.lib",
             "zlib.lib",
-            "webp.lib",
+            "libwebp.lib",
             "expat.lib",
             "freetype.lib"
           )
