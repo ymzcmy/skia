@@ -67,6 +67,23 @@ jobs:
           ./llvm.exe /S /D="C:\Program Files\LLVM"
           echo "C:\Program Files\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
+      - name: Physically disable activate-emsdk (彻底移除触发文件)
+        working-directory: skia
+        shell: pwsh
+        run: |
+          # 检查并禁用可能存在的 activate-emsdk 脚本（包括不同扩展名）
+          $emsdkScripts = @(
+            "bin/activate-emsdk",
+            "bin/activate-emsdk.bat",
+            "bin/activate-emsdk.ps1"
+          )
+          foreach ($script in $emsdkScripts) {
+            if (Test-Path $script) {
+              Rename-Item -Path $script -NewName "$script.disabled" -Force
+              Write-Host "Disabled: $script"
+            }
+          }
+
       - name: Sync third-party dependencies (force skip emsdk)
         working-directory: skia
         shell: cmd
