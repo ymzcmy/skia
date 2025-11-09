@@ -11,7 +11,6 @@ env:
   SKIA_VERSION: m142
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/LLVM-17.0.6-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
-  # 关键修复：移除非法 env. 引用
   LLVM_PATH: C:/LLVM
   GN_ARGS_BASE: |
     target_cpu="x64"
@@ -64,17 +63,18 @@ jobs:
           git checkout main
           git pull
 
-      # ===== 关键修复：LLVM 无空格安装 =====
+      # ===== 关键修复：使用 cmd shell 避免语法冲突 =====
       - name: Install LLVM (silent install)
+        shell: cmd
         run: |
           mkdir C:\LLVM
-          curl -Lo llvm.exe ${{ env.LLVM_URL }}
-          ./llvm.exe /S /D="C:\LLVM"
+          curl -Lo llvm.exe %LLVM_URL%
+          llvm.exe /S /D="C:\LLVM"
           if not exist "C:\LLVM\bin\clang-cl.exe" (
-            echo "LLVM installation failed!"
+            echo LLVM installation failed!
             exit 1
           )
-          echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+          echo C:\LLVM\bin >> %GITHUB_PATH%
           clang-cl --version
 
       - name: Initialize depot_tools
@@ -93,28 +93,21 @@ jobs:
             New-Item -ItemType Directory -Path $binPath -Force | Out-Null
           }
           
+          # 创建 Python 格式防御脚本
           $pyContent = "import sys`r`nsys.exit(0)"
           $pyPath = Join-Path $binPath "activate-emsdk"
           [System.IO.File]::WriteAllText($pyPath, $pyContent)
           
+          # 创建 Batch 格式防御脚本
           $batContent = "@echo off`r`nexit /b 0"
           $batPath = Join-Path $binPath "activate-emsdk.bat"
           [System.IO.File]::WriteAllText($batPath, $batContent)
           
-          $ps1Content = "exit 0"
-          $ps1Path = Join-Path $binPath "activate-emsdk.ps1"
-          [System.IO.File]::WriteAllText($ps1Path, $ps1Content)
-          
-          # 简化验证步骤
+          # 验证脚本
           & python $pyPath
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & cmd /c $batPath
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          & powershell -ExecutionPolicy Bypass -File $ps1Path
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          
-          [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
-          $env:NO_EMSCRIPTEN = "1"
 
       - name: 同步第三方依赖
         working-directory: skia
