@@ -1,10 +1,11 @@
 name: Build Skia m142 (Windows x64 static, LLVM)
 
 on:
-  workflow_dispatch:        # 手动触发
   push:
-    tags:
-      - 'v*'                 # 打 tag 时自动触发
+    branches: [ chrome/m142 ]
+  pull_request:
+    branches: [ chrome/m142 ]
+  workflow_dispatch:
 
 env:
   SKIA_VERSION: m142
