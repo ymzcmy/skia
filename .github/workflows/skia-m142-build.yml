@@ -46,39 +46,33 @@ jobs:
       matrix:
         config: [Release, Debug]
     steps:
-      - name: Checkout Skia
+      - name: Checkout Skia (from own repo)
         run: |
-          git clone https://skia.googlesource.com/skia.git skia
+          # 拉取自己维护的 Skia 仓库
+          git clone https://github.com/ymzcmy/skia.git skia
           cd skia
+          # 检出目标分支（确保你的仓库中存在该分支）
           git checkout chrome/${{ env.SKIA_VERSION }}
 
       - name: Install Depot Tools (with update)
         run: |
-          # 下载并解压 depot_tools
           curl -Lo depot_tools.zip ${{ env.DEPOT_TOOLS_URL }}
           7z x depot_tools.zip -o"C:\depot_tools" -y
-          # 添加到 PATH（先添加，后续 LLVM 路径会覆盖工具冲突）
           echo "C:\depot_tools" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
-          # 更新 depot_tools 到最新版本（避免旧工具冲突）
           cd C:\depot_tools
           git pull
 
       - name: Install LLVM (silent install)
         run: |
-          # 下载 LLVM 安装包
           curl -Lo llvm.exe ${{ env.LLVM_URL }}
-          # 静默安装到指定目录（避免 7z 解压导致的文件结构异常）
           llvm.exe /S /D="C:\Program Files\LLVM"
-          # 将 LLVM 二进制路径添加到 PATH（优先级高于 depot_tools）
           echo "C:\Program Files\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
       - name: Sync third-party dependencies (skip emsdk)
         working-directory: skia
         env:
-          # 禁用 Emscripten 相关逻辑（避免触发 activate-emsdk 错误）
           NO_EMSCRIPTEN: 1
         run: |
-          # 显式使用系统 Python 执行（避免 depot_tools 内置旧版本 Python 冲突）
           python tools/git-sync-deps --deps-target=win
 
       - name: Generate GN args
@@ -109,16 +103,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$dst/include"
           New-Item -ItemType Directory -Force -Path "$dst/lib"
           
-          # 复制头文件（处理 robocopy 特殊退出码：≤7 均为成功）
           robocopy include "$dst/include" /E /NP /NFL /NDL
           if ($LASTEXITCODE -le 7) { exit 0 } else { exit $LASTEXITCODE }
           
-          # 复制静态库、构建参数、许可证
           Copy-Item out/${{ matrix.config }}/*.lib "$dst/lib"
           Copy-Item out/${{ matrix.config }}/args.gn "$dst"
           Copy-Item LICENSE "$dst"
-          
-          # 打包为 zip
           7z a -tzip "${dst}.zip" "$dst/*"
 
       - name: Upload build artifact
