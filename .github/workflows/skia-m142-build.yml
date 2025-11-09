@@ -12,16 +12,15 @@ env:
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
   LLVM_PATH: C:/LLVM
-  # 关键修复：使用 vcpkg 安装 libjpeg-turbo
+  # 配置保持不变（启用系统库）
   GN_ARGS_BASE: |
-    # 基础构建配置
     target_cpu="x64"
     is_component_build=false
     clang_win="C:/LLVM"
     cc="clang-cl"
     cxx="clang-cl"
     
-    # 关键修复：启用系统 libjpeg (vcpkg 已安装)
+    # 启用系统库（vcpkg 将安装所有依赖）
     skia_use_system_libjpeg=true
     skia_use_libjpeg_turbo=true
     skia_use_system_libpng=true
@@ -80,32 +79,45 @@ jobs:
           git checkout main
           git pull
 
-      - name: Install vcpkg and libjpeg-turbo
+      # ===== 关键修复：安装所有系统依赖库 =====
+      - name: Install vcpkg and all dependencies
         shell: pwsh
         run: |
           # 安装 vcpkg
+          Write-Host "📦 安装 vcpkg 包管理器..." -ForegroundColor Cyan
           git clone https://github.com/microsoft/vcpkg.git
           .\vcpkg\bootstrap-vcpkg.bat
           
-          # 安装 libjpeg-turbo
-          .\vcpkg\vcpkg.exe install libjpeg-turbo:x64-windows
+          # 安装所有需要的库
+          Write-Host "🔧 安装所有依赖库..." -ForegroundColor Cyan
+          .\vcpkg\vcpkg.exe install `
+            libjpeg-turbo:x64-windows `
+            libpng:x64-windows `
+            zlib:x64-windows `
+            libwebp:x64-windows `
+            expat:x64-windows `
+            freetype:x64-windows
           
           # 设置环境变量
-          $vcpkgRoot = (Get-Location).Path
+          $vcpkgRoot = (Get-Location).Path + "\vcpkg"
           $vcpkgTriplet = "x64-windows"
-          $vcpkgTripletPath = Join-Path $vcpkgRoot "vcpkg\installed\$vcpkgTriplet"
+          $vcpkgTripletPath = Join-Path $vcpkgRoot "installed\$vcpkgTriplet"
           
           # 添加到 PATH
-          $env:PATH += ";$vcpkgTripletPath\bin;$vcpkgTripletPath\lib"
+          $env:PATH += ";$vcpkgTripletPath\bin;$vcpkgTripletPath\lib;$vcpkgTripletPath\tools"
           [System.Environment]::SetEnvironmentVariable("PATH", $env:PATH, "Machine")
           
           # 设置 vcpkg 环境变量
           [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "Machine")
-          [System.Environment]::SetEnvironmentVariable("VCPKG_TRIPLET", $vcpkgTriplet, "Machine")
+          [System.Environment]::SetEnvironmentVariable("VCPKG_DEFAULT_TRIPLET", $vcpkgTriplet, "Machine")
           
+          # 验证安装
           Write-Host "✅ vcpkg 安装成功!"
-          Write-Host "✅ libjpeg-turbo 安装成功!"
-          Write-Host "✅ 环境变量已更新"
+          Write-Host "✅ 所有依赖库安装成功!"
+          Write-Host "📁 vcpkg 路径: $vcpkgRoot"
+          Write-Host "🔧 triplet: $vcpkgTriplet"
+          Write-Host "🔍 已安装库:"
+          Get-ChildItem "$vcpkgTripletPath\include" | Where-Object { $_.Name -match "jpeg|png|zlib|webp|expat|freetype" } | ForEach-Object { "  - $($_.Name)" }
 
       - name: Initialize depot_tools
         run: |
@@ -216,6 +228,26 @@ jobs:
       - name: 用 GN 生成构建文件
         working-directory: skia
         run: |
+          # 验证头文件存在
+          Write-Host "🔍 验证系统库头文件是否存在..."
+          $headers = @(
+            "jpeglib.h",
+            "png.h",
+            "zlib.h",
+            "webp/decode.h",
+            "expat.h",
+            "freetype/freetype.h"
+          )
+          
+          foreach ($header in $headers) {
+            $path = "C:\vcpkg\installed\x64-windows\include\$header"
+            if (Test-Path $path) {
+              Write-Host "✅ $header 已找到"
+            } else {
+              Write-Warning "⚠️ $header 未找到，但 vcpkg 应已安装"
+            }
+          }
+          
           gn gen "out/${{ matrix.config }}"
 
       - name: 用 Ninja 编译
@@ -267,11 +299,15 @@ jobs:
               - SVG 矢量图形
               - 高级文本排版
               - 动画支持 (Skottie)
-            - 依赖:
-              - vcpkg 安装的 libjpeg-turbo
-              - LLVM 19.1.0 编译器
+            - 依赖 (通过 vcpkg 安装):
+              - libjpeg-turbo
+              - libpng
+              - zlib
+              - libwebp
+              - expat
+              - freetype
             
-            > 此构建针对 Windows x64 平台优化
+            > 此构建针对 Windows x64 平台，使用 vcpkg 管理所有系统依赖
           files: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
