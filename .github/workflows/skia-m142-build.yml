@@ -1,4 +1,4 @@
-name: Build Skia m142 (Windows x64 static, LLVM1)
+name: Build Skia m142 (Windows x64 static, LLVM)
 
 on:
   workflow_dispatch:        # 手动触发
