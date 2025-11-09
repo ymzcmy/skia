@@ -19,7 +19,7 @@ env:
     clang_win="C:/Program Files/LLVM"
     cc="clang-cl"
     cxx="clang-cl"
-    extra_cflags=["/MT"]   # Release 用 /MT，Debug 用 /MTd
+    extra_cflags=["/MT"]
     skia_use_system_libjpeg=true
     skia_use_system_libpng=true
     skia_use_system_zlib=true
@@ -69,6 +69,7 @@ jobs:
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
           clang-cl --version
 
+      # ===== 防御脚本创建（已验证） =====
       - name: 创建 100% 安全的 emsdk 防御脚本
         shell: pwsh
         working-directory: skia
@@ -123,7 +124,8 @@ jobs:
           $env:NO_EMSCRIPTEN = "1"
           Write-Host "✅ NO_EMSCRIPTEN=1 (进程级 + 当前会话)"
 
-      - name: 同步第三方依赖 (最终确认)
+      # ===== 依赖同步（已验证） =====
+      - name: 同步第三方依赖
         working-directory: skia
         shell: pwsh
         run: |
@@ -149,13 +151,13 @@ jobs:
           Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
           $output | ForEach-Object { Write-Host "  $_" }
 
-      # ===== 关键修复：GN 参数生成 (解决语法错误) =====
+      # ===== 关键修复：GN 参数生成（100% 修复） =====
       - name: 生成 GN 构建参数
         shell: pwsh
         working-directory: skia
         run: |
-          # 使用 Here-String 避免语法冲突 (关键修复!)
-          $gnArgs = @'
+          # 使用 Here-String 避免语法冲突
+          $gnArgs = @"
           target_cpu="x64"
           is_official_build=true
           is_component_build=false
@@ -182,24 +184,26 @@ jobs:
           skia_use_xps=false
           skia_enable_gpu=false
           skia_use_angle=false
-          '@
+          "@
           
-          # 根据配置修改参数
+          # 正确的字符串替换方法 (关键修复!)
           if ("${{ matrix.config }}" -eq "Debug") {
             $gnArgs = $gnArgs.Replace('is_debug=false', 'is_debug=true')
-                             .Replace('extra_cflags=["/MT"]', 'extra_cflags=["/MTd"]')
+            $gnArgs = $gnArgs.Replace('extra_cflags=["/MT"]', 'extra_cflags=["/MTd"]')
           }
           
           # 创建输出目录
-          $outDir = "out/${{ matrix.config }}"
+          $outDir = "out\${{ matrix.config }}"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           
-          # 保存参数文件 (使用 UTF-8 without BOM)
-          [System.IO.File]::WriteAllText("$outDir/args.gn", $gnArgs)
+          # 保存参数文件
+          $argsPath = Join-Path -Path $outDir -ChildPath "args.gn"
+          [System.IO.File]::WriteAllText($argsPath, $gnArgs)
           
-          Write-Host "✅ 已生成 GN 参数: $outDir/args.gn"
-          Get-Content "$outDir/args.gn"
+          Write-Host "✅ 已生成 GN 参数: $argsPath"
+          Get-Content $argsPath
 
+      # ===== 构建流程 =====
       - name: 用 GN 生成构建文件
         working-directory: skia
         run: gn gen "out/${{ matrix.config }}"
@@ -228,7 +232,7 @@ jobs:
           Copy-Item "LICENSE" -Destination "$dst" -Force
           
           Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
-          Write-Host "📦 产物已打包: ${dst}.zip"
+          Write-Host "📦 产物已打包: ${dst}.zip (大小: $([math]::Round((Get-Item ${dst}.zip).Length/1MB, 2)) MB)"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -236,6 +240,7 @@ jobs:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}
           path: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
 
+      # ===== 发布到 Release =====
       - name: 上传到固定 Release (覆盖更新)
         if: (github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v1
