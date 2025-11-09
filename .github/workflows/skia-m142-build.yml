@@ -69,7 +69,6 @@ jobs:
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
           clang-cl --version
 
-      # ===== 终极防御机制（三种格式脚本）=====
       - name: 创建 100% 安全的 emsdk 防御脚本
         shell: pwsh
         working-directory: skia
@@ -79,17 +78,15 @@ jobs:
             New-Item -ItemType Directory -Path $binPath -Force | Out-Null
           }
           
-          # 1. Python 格式 (无扩展名)
+          # 创建三种格式的防御脚本
           $pyContent = "import sys`r`nsys.exit(0)"
           $pyPath = Join-Path $binPath "activate-emsdk"
           [System.IO.File]::WriteAllText($pyPath, $pyContent)
           
-          # 2. Batch 格式 (.bat)
           $batContent = "@echo off`r`nexit /b 0"
           $batPath = Join-Path $binPath "activate-emsdk.bat"
           [System.IO.File]::WriteAllText($batPath, $batContent)
           
-          # 3. PowerShell 格式 (.ps1)
           $ps1Content = "exit 0"
           $ps1Path = Join-Path $binPath "activate-emsdk.ps1"
           [System.IO.File]::WriteAllText($ps1Path, $ps1Content)
@@ -122,12 +119,10 @@ jobs:
             exit 1
           }
           
-          # 设置环境变量
           [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
           $env:NO_EMSCRIPTEN = "1"
           Write-Host "✅ NO_EMSCRIPTEN=1 (进程级 + 当前会话)"
 
-      # ===== 关键：使用 --no-emsdk 参数 =====
       - name: 同步第三方依赖 (最终确认)
         working-directory: skia
         shell: pwsh
@@ -141,7 +136,6 @@ jobs:
           $cmd = "$python tools\git-sync-deps --deps-target=win --no-emsdk"
           Write-Host "➡️ 执行命令: $cmd"
           
-          # 捕获完整输出
           $output = cmd /c "$cmd"
           $exitCode = $LASTEXITCODE
           
@@ -155,20 +149,56 @@ jobs:
           Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
           $output | ForEach-Object { Write-Host "  $_" }
 
+      # ===== 关键修复：GN 参数生成 (解决语法错误) =====
       - name: 生成 GN 构建参数
         shell: pwsh
         working-directory: skia
         run: |
-          $args = "${{ env.GN_ARGS_BASE }}"
+          # 使用 Here-String 避免语法冲突 (关键修复!)
+          $gnArgs = @'
+          target_cpu="x64"
+          is_official_build=true
+          is_component_build=false
+          is_debug=false
+          clang_win="C:/Program Files/LLVM"
+          cc="clang-cl"
+          cxx="clang-cl"
+          extra_cflags=["/MT"]
+          skia_use_system_libjpeg=true
+          skia_use_system_libpng=true
+          skia_use_system_zlib=true
+          skia_use_system_freetype2=false
+          skia_use_system_harfbuzz=false
+          skia_use_system_webp=false
+          skia_enable_svg=true
+          skia_enable_skottie=true
+          skia_enable_skshaper=true
+          skia_enable_paragraph=true
+          skia_enable_effects=true
+          skia_enable_filters=true
+          skia_use_expat=true
+          skia_use_system_expat=false
+          skia_use_icu=false
+          skia_use_xps=false
+          skia_enable_gpu=false
+          skia_use_angle=false
+          '@
+          
+          # 根据配置修改参数
           if ("${{ matrix.config }}" -eq "Debug") {
-            $args = $args.Replace('is_debug=false', 'is_debug=true')
-                         .Replace('extra_cflags=["/MT"]', 'extra_cflags=["/MTd"]')
+            $gnArgs = $gnArgs.Replace('is_debug=false', 'is_debug=true')
+                             .Replace('extra_cflags=["/MT"]', 'extra_cflags=["/MTd"]')
           }
-          $outDir = "out\${{ matrix.config }}"
+          
+          # 创建输出目录
+          $outDir = "out/${{ matrix.config }}"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-          $args | Out-File -FilePath "${outDir}\args.gn" -Encoding utf8
-          Write-Host "已生成 GN 参数: ${outDir}\args.gn"
-          Get-Content "${outDir}\args.gn"
+          
+          # 保存参数文件 (使用 UTF-8 without BOM)
+          [System.IO.File]::WriteAllText("$outDir/args.gn", $gnArgs)
+          
+          Write-Host "✅ 已生成 GN 参数: $outDir/args.gn"
+          Get-Content "$outDir/args.gn"
 
       - name: 用 GN 生成构建文件
         working-directory: skia
