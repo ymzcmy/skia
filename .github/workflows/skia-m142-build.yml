@@ -12,22 +12,21 @@ env:
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
   LLVM_PATH: C:/LLVM
-  # 关键修复：直接内联所有配置，确保不被覆盖
-  GN_ARGS: |
+  # 关键修复：只定义一次 extra_cflags
+  GN_ARGS_BASE: |
+    # 基础构建配置（不包含 extra_cflags）
     target_cpu="x64"
     is_component_build=false
-    is_debug=false
     clang_win="C:/LLVM"
     cc="clang-cl"
     cxx="clang-cl"
-    extra_cflags=["/MT"]
     
     # 核心 2D 图形能力
     skia_enable_svg=true
     skia_enable_gpu=true
     skia_use_angle=true
     
-    # 图像处理 (禁用系统库，使用内置实现)
+    # 图像处理 (禁用系统库)
     skia_use_system_libjpeg=false
     skia_use_system_libpng=false
     skia_use_system_zlib=false
@@ -55,7 +54,6 @@ env:
     skia_enable_flutter_defines=false
     skia_enable_nvpr=false
     skia_enable_spirv_validation=false
-
   RELEASE_NAME: "Skia-m142-Nightly-Windows"
 
 jobs:
@@ -170,50 +168,19 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      # ===== 关键修复：确保配置正确应用 =====
+      # ===== 关键修复：正确处理 extra_cflags =====
       - name: 生成 GN 构建参数
         shell: pwsh
         working-directory: skia
         run: |
-          $gnArgs = @"
-          target_cpu="x64"
-          is_component_build=false
-          clang_win="C:/LLVM"
-          cc="clang-cl"
-          cxx="clang-cl"
-          extra_cflags=["/MT"]
+          # 基础配置（不包含 extra_cflags）
+          $gnArgs = $env:GN_ARGS_BASE
           
-          # 确保这些关键设置生效
-          skia_use_system_libjpeg=false
-          skia_use_system_libpng=false
-          skia_use_system_zlib=false
-          skia_use_system_webp=false
-          skia_use_system_freetype2=false
-          skia_use_system_icu=false
-          skia_use_system_expat=false
-          
-          # 其他配置
-          skia_enable_svg=true
-          skia_enable_gpu=true
-          skia_use_angle=true
-          skia_enable_paragraph=true
-          skia_enable_skshaper=true
-          skia_enable_skottie=true
-          skia_enable_effects=true
-          skia_enable_filters=true
-          skia_use_expat=true
-          skia_use_icu=true
-          skia_use_xps=false
-          skia_enable_pdf=false
-          skia_enable_flutter_defines=false
-          skia_enable_nvpr=false
-          skia_enable_spirv_validation=false
-          "@
-          
-          if ("${{ matrix.config }}" -eq "Debug") {
-            $gnArgs = $gnArgs + "`n`nis_debug=true`nis_official_build=false`nextra_cflags=[`"/MTd`"]`n"
+          # 仅在 Release 构建中添加 extra_cflags
+          if ("${{ matrix.config }}" -eq "Release") {
+            $gnArgs += "`n`nis_debug=false`nis_official_build=true`nextra_cflags=[`"/MT`"]`n"
           } else {
-            $gnArgs = $gnArgs + "`n`nis_debug=false`nis_official_build=true`nextra_cflags=[`"/MT`"]`n"
+            $gnArgs += "`n`nis_debug=true`nis_official_build=false`nextra_cflags=[`"/MTd`"]`n"
           }
           
           $outDir = "out\${{ matrix.config }}"
