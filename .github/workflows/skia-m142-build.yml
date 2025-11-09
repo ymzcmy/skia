@@ -5,15 +5,15 @@ on:
     branches: [ chrome/m142 ]
   pull_request:
     branches: [ chrome/m142 ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 env:
-  SKIA_VERSION: chrome/m142  # 指定m142分支
+  SKIA_VERSION: chrome/m142
   BUILD_TYPE: Static
 
 jobs:
   build-windows-static:
-    runs-on: windows-2019  # 兼容Win7的SDK版本
+    runs-on: windows-2019
     
     strategy:
       matrix:
@@ -33,17 +33,14 @@ jobs:
     - name: Install depot_tools
       shell: pwsh
       run: |
-        # 下载depot_tools
         Invoke-WebRequest -Uri "https://storage.googleapis.com/chrome-infra/depot_tools.zip" -OutFile "depot_tools.zip"
         Expand-Archive -Path "depot_tools.zip" -DestinationPath "C:\depot_tools"
-        # 设置环境变量
         echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" >> $env:GITHUB_ENV
         echo "C:\depot_tools" >> $env:GITHUB_PATH
 
     - name: Install LLVM
       shell: pwsh
       run: |
-        # 下载并安装LLVM
         Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.0/LLVM-14.0.0-win64.exe" -OutFile "llvm-installer.exe"
         Start-Process -FilePath ".\llvm-installer.exe" -ArgumentList "/S", "/D=C:\LLVM" -Wait
         echo "C:\LLVM\bin" >> $env:GITHUB_PATH
@@ -51,13 +48,11 @@ jobs:
     - name: Install dependencies
       shell: pwsh
       run: |
-        # 安装必要的工具
         choco install -y ninja
         
     - name: Sync dependencies
       shell: pwsh
       run: |
-        # 同步Skia依赖[citation:1][citation:4]
         python tools/git-sync-deps
 
     - name: Configure build for ${{ matrix.config }}
@@ -65,11 +60,10 @@ jobs:
       run: |
         $outDir = "out\static_${{ matrix.config }}_x64"
         
-        # 生成GN配置参数
         $gnArgs = @(
           'is_debug=' + ('true' -eq ('${{ matrix.config }}' -eq 'Debug'))
           'is_official_build=' + ('true' -eq ('${{ matrix.config }}' -eq 'Release'))
-          'is_component_build=false'  # 静态库
+          'is_component_build=false'
           'target_cpu="x64"'
           'skia_use_system_libjpeg=true'
           'skia_use_system_libpng=true'
@@ -98,18 +92,14 @@ jobs:
           'clang_win="C:\LLVM"'
           'cc="clang"'
           'cxx="clang++"'
-          'win_sdk_version="10.0.17763.0"'  # 兼容Win7的SDK版本
+          'win_sdk_version="10.0.17763.0"'
           'win_vc="C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC"'
-          'extra_cflags=' + ('["/MTd"]' -eq ('${{ matrix.config }}' -eq 'Debug') -replace '^', '"' -replace '$', '"')
-          'extra_ldflags=' + ('["/MTd"]' -eq ('${{ matrix.config }}' -eq 'Debug') -replace '^', '"' -replace '$', '"')
         )
         
-        # 创建构建目录和配置文件
         New-Item -ItemType Directory -Path $outDir -Force
         $gnArgsString = $gnArgs -join "`n"
         Set-Content -Path "$outDir\args.gn" -Value $gnArgsString
         
-        # 生成构建文件
         bin/gn gen $outDir
 
     - name: Build Skia ${{ matrix.config }}
@@ -124,18 +114,13 @@ jobs:
         $buildDir = "out\static_${{ matrix.config }}_x64"
         $artifactDir = "skia_${{ matrix.config }}_x64"
         
-        # 创建制品目录结构
         New-Item -ItemType Directory -Path $artifactDir -Force
         New-Item -ItemType Directory -Path "$artifactDir\lib" -Force
         New-Item -ItemType Directory -Path "$artifactDir\include" -Force
         
-        # 复制静态库文件
         Copy-Item "$buildDir\skia.lib" -Destination "$artifactDir\lib\"
-        
-        # 复制头文件[citation:1]
         Copy-Item -Path "include\*" -Destination "$artifactDir\include\" -Recurse -Force
         
-        # 复制必要的第三方头文件
         if (Test-Path "third_party") {
           $thirdPartyHeaders = Get-ChildItem -Path "third_party" -Include "*.h", "*.hpp" -Recurse -File
           foreach ($header in $thirdPartyHeaders) {
@@ -149,7 +134,7 @@ jobs:
           }
         }
         
-        # 创建使用说明
+        # 创建使用说明 - 修正后的版本
         $readmeContent = @"
 Skia ${{ env.SKIA_VERSION }} Static Library (${{ matrix.config }})
 Build Date: $(Get-Date -Format "yyyy-MM-dd")
@@ -172,8 +157,8 @@ Features Enabled:
 - skia_enable_filters=true
 
 Usage:
-1. Add '$artifactDir/include' to your include directories
-2. Link against '$artifactDir/lib/skia.lib'
+1. Add 'include' directory to your project includes
+2. Link against 'lib/skia.lib'
 3. Ensure required system libraries (jpeg, png, zlib) are available
 
 Note: This build is compatible with Windows 7 and later.
