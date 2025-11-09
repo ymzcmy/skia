@@ -69,127 +69,91 @@ jobs:
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
           clang-cl --version
 
-      # ===== 100% 可靠的防御脚本创建 =====
-      - name: 创建绝对可靠的 emsdk 防御机制
+      # ===== 终极防御机制（三种格式脚本）=====
+      - name: 创建 100% 安全的 emsdk 防御脚本
         shell: pwsh
         working-directory: skia
         run: |
-          # 1. 确保 bin 目录存在
           $binPath = Join-Path -Path $pwd -ChildPath "bin"
           if (-not (Test-Path $binPath)) {
             New-Item -ItemType Directory -Path $binPath -Force | Out-Null
-            Write-Host "📁 创建目录: $binPath"
           }
           
-          # 2. 创建防御脚本 (确保 Windows 能正确执行)
-          $scripts = @(
-            # 无扩展名 (实际是批处理内容)
-            @{Name = "activate-emsdk"; 
-              Content = "@echo off`r`nexit /b 0"; 
-              Encoding = "ASCII"},
-            
-            # .bat 版本 (Windows 优先)
-            @{Name = "activate-emsdk.bat"; 
-              Content = "@echo off`r`nexit /b 0"; 
-              Encoding = "ASCII"},
-            
-            # .ps1 版本 (作为后备)
-            @{Name = "activate-emsdk.ps1"; 
-              Content = "exit 0"; 
-              Encoding = "UTF8"}
+          # 1. Python 格式 (无扩展名)
+          $pyContent = "import sys`r`nsys.exit(0)"
+          $pyPath = Join-Path $binPath "activate-emsdk"
+          [System.IO.File]::WriteAllText($pyPath, $pyContent)
+          
+          # 2. Batch 格式 (.bat)
+          $batContent = "@echo off`r`nexit /b 0"
+          $batPath = Join-Path $binPath "activate-emsdk.bat"
+          [System.IO.File]::WriteAllText($batPath, $batContent)
+          
+          # 3. PowerShell 格式 (.ps1)
+          $ps1Content = "exit 0"
+          $ps1Path = Join-Path $binPath "activate-emsdk.ps1"
+          [System.IO.File]::WriteAllText($ps1Path, $ps1Content)
+          
+          # 验证所有脚本
+          $tests = @(
+            @{Name="Python"; Cmd="python $pyPath"},
+            @{Name="Batch"; Cmd="cmd /c $batPath"},
+            @{Name="PowerShell"; Cmd="powershell -ExecutionPolicy Bypass -File $ps1Path"}
           )
           
-          foreach ($script in $scripts) {
-            $scriptPath = Join-Path -Path $binPath -ChildPath $script.Name
-            
-            # 写入文件（特殊处理换行符）
-            $script.Content | Out-File -FilePath $scriptPath -Encoding $script.Encoding -Force
-            
-            # 设置文件属性
-            attrib -R $scriptPath 2>$null
-            
-            Write-Host "🛡️ 创建: $scriptPath"
-            Write-Host "   内容: '$($script.Content -replace '`r','\\r' -replace '`n','\\n')'"
-            
-            # 验证文件内容
-            $content = Get-Content $scriptPath -Raw
-            Write-Host "   验证内容: '$($content.Trim() -replace '`r','\\r' -replace '`n','\\n')'"
+          $allPassed = $true
+          foreach ($test in $tests) {
+            try {
+              Invoke-Expression $test.Cmd
+              if ($LASTEXITCODE -ne 0) {
+                Write-Error "❌ $($test.Name) 测试失败 (退出码 $LASTEXITCODE): $($test.Cmd)"
+                $allPassed = $false
+              } else {
+                Write-Host "✅ $($test.Name) 测试成功: $($test.Cmd)"
+              }
+            } catch {
+              Write-Error "❌ $($test.Name) 执行异常: $_"
+              $allPassed = $false
+            }
           }
           
-          # 3. 验证脚本可执行性
-          Write-Host "`n🔍 验证防御脚本执行:"
-          
-          # 测试无扩展名脚本
-          cmd /c "bin\activate-emsdk"
-          $exitCode = $LASTEXITCODE
-          Write-Host "   无扩展名脚本: 退出码 $exitCode"
-          if ($exitCode -ne 0) {
-            Write-Warning "⚠️ 无扩展名脚本未返回 0，但将继续尝试其他方法"
+          if (-not $allPassed) {
+            Write-Error "❌ 防御脚本测试未通过，构建中止"
+            exit 1
           }
           
-          # 测试 .bat 脚本
-          cmd /c "bin\activate-emsdk.bat"
-          $exitCode = $LASTEXITCODE
-          Write-Host "   .bat 脚本: 退出码 $exitCode"
-          
-          # 测试 .ps1 脚本
-          powershell -ExecutionPolicy Bypass -Command "bin\activate-emsdk.ps1; exit $LASTEXITCODE"
-          $exitCode = $LASTEXITCODE
-          Write-Host "   .ps1 脚本: 退出码 $exitCode"
-          
-          # 4. 设置环境变量
-          $env:NO_EMSCRIPTEN = "1"
+          # 设置环境变量
           [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
-          Write-Host "`n✅ NO_EMSCRIPTEN=1 (环境变量设置)"
+          $env:NO_EMSCRIPTEN = "1"
+          Write-Host "✅ NO_EMSCRIPTEN=1 (进程级 + 当前会话)"
 
-      # ===== 100% 可靠的同步步骤 =====
+      # ===== 关键：使用 --no-emsdk 参数 =====
       - name: 同步第三方依赖 (最终确认)
         working-directory: skia
         shell: pwsh
         run: |
-          # 确认环境变量
-          Write-Host "环境变量验证:"
-          Write-Host "NO_EMSCRIPTEN = $env:NO_EMSCRIPTEN"
-          
-          # 使用绝对路径调用 Python
           $python = "C:\hostedtoolcache\windows\Python\3.9.13\x64\python.exe"
           if (-not (Test-Path $python)) {
-            Write-Error "❌ Python 未找到! 路径: $python"
+            Write-Error "❌ Python 未找到!"
             exit 1
           }
           
-          # 执行同步命令 (添加 --no-emsdk 参数)
           $cmd = "$python tools\git-sync-deps --deps-target=win --no-emsdk"
-          Write-Host "`n➡️ 执行命令: $cmd"
+          Write-Host "➡️ 执行命令: $cmd"
           
-          # 使用 cmd.exe 执行，捕获完整输出
-          $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -Wait -PassThru -NoNewWindow -RedirectStandardOutput "sync_output.txt" -RedirectStandardError "sync_error.txt"
+          # 捕获完整输出
+          $output = cmd /c "$cmd"
+          $exitCode = $LASTEXITCODE
           
-          # 显示输出
-          Write-Host "`n命令输出:"
-          Get-Content "sync_output.txt" | ForEach-Object { Write-Host "OUT: $_" }
-          
-          Write-Host "`n错误输出:"
-          if (Test-Path "sync_error.txt") {
-            Get-Content "sync_error.txt" | ForEach-Object { Write-Host "ERR: $_" }
+          if ($exitCode -ne 0) {
+            Write-Error "❌ 依赖同步失败! 退出码: $exitCode"
+            Write-Error "详细输出:"
+            $output | ForEach-Object { Write-Error "  $_" }
+            exit $exitCode
           }
           
-          if ($process.ExitCode -ne 0) {
-            Write-Error "`n❌ 依赖同步失败! 退出码: $($process.ExitCode)"
-            
-            # 尝试诊断失败原因
-            Write-Host "`n🔍 诊断信息:"
-            Write-Host "当前目录: $(pwd)"
-            Write-Host "bin 目录内容:"
-            Get-ChildItem "bin" -Filter "activate-emsdk*" | ForEach-Object {
-              Write-Host "  $($_.Name) - 大小: $($_.Length) 字节"
-            }
-            
-            exit $process.ExitCode
-          }
-          else {
-            Write-Host "`n✅ 依赖同步成功!" -ForegroundColor Green
-          }
+          Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
+          $output | ForEach-Object { Write-Host "  $_" }
 
       - name: 生成 GN 构建参数
         shell: pwsh
@@ -221,30 +185,20 @@ jobs:
           $config = "${{ matrix.config }}"
           $dst = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-${config}"
           
-          # 创建目录结构
           New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           
-          # 复制头文件
           robocopy "include" "$dst\include" /E /NP /NFL /NDL /R:1 /W:1
           if ($LASTEXITCODE -gt 7) { 
             Write-Error "头文件复制失败 (错误码: $LASTEXITCODE)"; exit $LASTEXITCODE 
           }
           
-          # 复制库文件和元数据
-          $libFiles = Get-ChildItem -Path "out\${config}\*.lib" -Recurse
-          foreach ($file in $libFiles) {
-            Copy-Item $file.FullName -Destination "$dst\lib" -Force
-            Write-Host "📄 已复制: $($file.Name)"
-          }
-          
+          Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
           Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
           Copy-Item "LICENSE" -Destination "$dst" -Force
           
-          # 创建 ZIP 归档
           Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
-          $zipSize = (Get-Item "${dst}.zip").Length / 1MB
-          Write-Host "📦 产物已打包: ${dst}.zip (大小: $($zipSize.ToString('F2')) MB)"
+          Write-Host "📦 产物已打包: ${dst}.zip"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -252,17 +206,12 @@ jobs:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}
           path: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
 
-      # ===== 每次成功构建后覆盖更新固定 Release =====
       - name: 上传到固定 Release (覆盖更新)
-        # 仅在 main 分支的 push 事件或手动触发时上传
         if: (github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v1
         with:
-          # 指定固定 Release 名称 (会覆盖同名 Release)
           name: ${{ env.RELEASE_NAME }}
-          # 覆盖更新已有 Release
           update: true
-          # 附加构建信息
           body: |
             **自动构建产物**  
             - 分支: `${{ github.ref_name }}`  
