@@ -98,18 +98,28 @@ jobs:
           # 设置环境变量（静态库路径）
           $vcpkgRoot = (Get-Location).Path + "\vcpkg"
           $vcpkgTriplet = "x64-windows-static"
-          $vcpkgTripletPath = Join-Path $vcpkgRoot "installed\$vcpkgTriplet"
           
-          # 记录 vcpkg 路径到环境变量（供后续 GN 配置使用）
+          # 显式设置 Machine 级环境变量（确保后续步骤可读取）
           [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "Machine")
           [System.Environment]::SetEnvironmentVariable("VCPKG_TRIPLET", $vcpkgTriplet, "Machine")
           
-          # 验证安装
+          # 验证环境变量设置
+          Write-Host "✅ 验证环境变量："
+          Write-Host "VCPKG_ROOT = $vcpkgRoot"
+          Write-Host "VCPKG_TRIPLET = $vcpkgTriplet"
+          if (-not $vcpkgRoot -or -not $vcpkgTriplet) {
+            Write-Error "❌ 环境变量设置失败！"
+            exit 1
+          }
+          
+          # 验证安装路径
+          $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
+          $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
+          if (-not (Test-Path $vcpkgInclude) -or -not (Test-Path $vcpkgLib)) {
+            Write-Error "❌ vcpkg 静态库路径不存在！"
+            exit 1
+          }
           Write-Host "✅ vcpkg 静态库安装成功!"
-          Write-Host "📁 vcpkg 路径: $vcpkgRoot"
-          Write-Host "🔧 triplet: $vcpkgTriplet"
-          Write-Host "🔍 已安装静态库头文件:"
-          Get-ChildItem "$vcpkgTripletPath\include" | Where-Object { $_.Name -match "jpeg|png|zlib|webp|expat|freetype" } | ForEach-Object { "  - $($_.Name)" }
 
       - name: Initialize depot_tools
         run: |
@@ -203,14 +213,27 @@ jobs:
         shell: pwsh
         working-directory: skia
         run: |
-          $gnArgs = $env:GN_ARGS_BASE
+          # 显式读取并验证环境变量
+          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
+          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET", "Machine")
           
-          # 注入 vcpkg 静态库的头文件和库文件路径
-          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT")
-          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET")
+          if (-not $vcpkgRoot -or -not $vcpkgTriplet) {
+            Write-Error "❌ VCPKG_ROOT 或 VCPKG_TRIPLET 环境变量为空，请检查 vcpkg 安装步骤！"
+            exit 1
+          }
+          
+          # 拼接 vcpkg 静态库路径
           $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
           $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
           
+          # 验证路径存在
+          if (-not (Test-Path $vcpkgInclude) -or -not (Test-Path $vcpkgLib)) {
+            Write-Error "❌ vcpkg 静态库路径不存在！"
+            exit 1
+          }
+          
+          # 生成 GN 参数
+          $gnArgs = $env:GN_ARGS_BASE
           $gnArgs += "`n`nextra_cflags = [""-I$vcpkgInclude""]`n"
           $gnArgs += "`n`nextra_ldflags = [""-L$vcpkgLib""]`n"
           
@@ -230,9 +253,8 @@ jobs:
         working-directory: skia
         run: |
           # 验证 vcpkg 静态库头文件
-          Write-Host "🔍 验证 vcpkg 静态库头文件是否存在..."
-          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT")
-          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET")
+          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
+          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET", "Machine")
           $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
           
           $headers = @(
