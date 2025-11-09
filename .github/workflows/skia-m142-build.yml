@@ -320,8 +320,18 @@ jobs:
           New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           
-          robocopy "include" "$dst\include" /E /NP /NFL /NDL /R:1 /W:1
-          if ($LASTEXITCODE -gt 7) { exit $LASTEXITCODE }
+          # 生成详细复制日志
+          $logPath = Join-Path $dst "robocopy.log"
+          robocopy "include" "$dst\include" /E /NP /NFL /NDL /R:1 /W:1 /LOG+:$logPath
+          $robocopyExitCode = $LASTEXITCODE
+          
+          # 仅当退出码 >7 时才视为失败
+          if ($robocopyExitCode -gt 7) {
+            Write-Error "头文件复制失败，退出码: $robocopyExitCode"
+            # 输出日志内容以便排查
+            Get-Content $logPath | Write-Host
+            exit $robocopyExitCode
+          }
           
           Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
           Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
