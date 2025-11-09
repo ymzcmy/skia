@@ -1,159 +1,122 @@
-name: Build Skia M142 Static Libraries with LLVM
+name: Build Skia m142 – Windows x64 static (LLVM)
 
 on:
-  push:
-    branches: [ chrome/m142 ]
-  pull_request:
-    branches: [ chrome/m142 ]
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 env:
-  SKIA_VERSION: chrome/m142
-  BUILD_TYPE: Static
+  SKIA_VERSION: m142
+  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/LLVM-17.0.6-win64.exe
+  DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
 
 jobs:
-  build-windows-static:
-    runs-on: windows-latest
-    
+  build:
+    runs-on: windows-2022
     strategy:
+      fail-fast: false
       matrix:
-        config: [Debug, Release]
-    
+        config: [Release, Debug]
+
     steps:
-    - name: Checkout Skia
-      uses: actions/checkout@v4
-      with:
-        ref: ${{ env.SKIA_VERSION }}
+      # ---- 1. 拉源码 ----
+      - name: Checkout Skia
+        run: |
+          git clone https://skia.googlesource.com/skia.git skia
+          cd skia
+          git checkout chrome/${{ env.SKIA_VERSION }}
 
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
+      # ---- 2. 装 LLVM-17 ----
+      - name: Install LLVM
+        run: |
+          curl -Lo llvm.exe ${{ env.LLVM_URL }}
+          7z x llvm.exe -o"C:\Program Files\LLVM" -y
+          echo "C:\Program Files\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
-    - name: Install depot_tools
-      shell: pwsh
-      run: |
-        Invoke-WebRequest -Uri "https://storage.googleapis.com/chrome-infra/depot_tools.zip" -OutFile "depot_tools.zip"
-        Expand-Archive -Path "depot_tools.zip" -DestinationPath "C:\depot_tools"
-        echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" >> $env:GITHUB_ENV
-        echo "C:\depot_tools" >> $env:GITHUB_PATH
+      # ---- 3. 装 Depot Tools ----
+      - name: Install Depot Tools
+        run: |
+          curl -Lo depot_tools.zip ${{ env.DEPOT_TOOLS_URL }}
+          7z x depot_tools.zip -o"C:\depot_tools" -y
+          echo "C:\depot_tools" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
-    - name: Install LLVM
-      shell: pwsh
-      run: |
-        Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.0/LLVM-14.0.0-win64.exe" -OutFile "llvm-installer.exe"
-        Start-Process -FilePath ".\llvm-installer.exe" -ArgumentList "/S", "/D=C:\LLVM" -Wait
-        echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+      # ---- 4. 只拉 Windows 依赖（避开 emsdk） ----
+      - name: Sync dependencies
+        working-directory: skia
+        run: python tools/git-sync-deps --deps-target=win
 
-    - name: Install dependencies
-      shell: pwsh
-      run: |
-        choco install -y ninja
-        
-    - name: Sync dependencies
-      shell: pwsh
-      run: |
-        $maxAttempts = 3
-        $attempt = 1
-        do {
-          try {
-            python tools/git-sync-deps
-            break
-          } catch {
-            Write-Host "Attempt $attempt failed: $($_.Exception.Message)"
-            $attempt++
-            if ($attempt -le $maxAttempts) {
-              Write-Host "Retrying in 5 seconds..."
-              Start-Sleep -Seconds 5
-            } else {
-              Write-Error "All attempts failed"
-              throw
-            }
+      # ---- 5. 生成 GN 参数 ----
+      - name: Generate args.gn
+        shell: pwsh
+        working-directory: skia
+        run: |
+          $gn = @'
+          target_cpu="x64"
+          is_official_build=true
+          is_component_build=false
+          clang_win="C:/Program Files/LLVM"
+          cc="clang-cl"
+          cxx="clang-cl"
+          extra_cflags=["/MT"]
+          skia_use_system_libjpeg=true
+          skia_use_system_libpng=true
+          skia_use_system_zlib=true
+          skia_use_system_freetype2=false
+          skia_use_system_harfbuzz=false
+          skia_use_system_webp=false
+          skia_enable_svg=true
+          skia_enable_skottie=true
+          skia_enable_skshaper=true
+          skia_enable_paragraph=true
+          skia_enable_effects=true
+          skia_enable_filters=true
+          skia_use_expat=true
+          skia_use_system_expat=false
+          skia_use_icu=false
+          skia_use_xps=false
+          skia_enable_gpu=false
+          skia_use_angle=false
+          '@
+          if ("${{ matrix.config }}" -eq "Debug") {
+            $gn = $gn.Replace('extra_cflags=["/MT"]','extra_cflags=["/MTd"]')
+                     .Replace("is_debug=false","is_debug=true")
           }
-        } while ($attempt -le $maxAttempts)
+          New-Item -ItemType Directory -Force -Path "out/${{ matrix.config }}"
+          $gn | Out-File -FilePath "out/${{ matrix.config }}/args.gn" -Encoding utf8
 
-    - name: Configure build for ${{ matrix.config }}
-      shell: pwsh
-      run: |
-        $outDir = "out\static_${{ matrix.config }}_x64"
-        
-        $gnArgs = @(
-          'is_debug=' + ('true' -eq ('${{ matrix.config }}' -eq 'Debug'))
-          'is_official_build=' + ('true' -eq ('${{ matrix.config }}' -eq 'Release'))
-          'is_component_build=false'
-          'target_cpu="x64"'
-          'skia_use_system_libjpeg=true'
-          'skia_use_system_libpng=true'
-          'skia_use_system_zlib=true'
-          'skia_use_system_freetype2=false'
-          'skia_use_system_harfbuzz=false'
-          'skia_use_system_webp=false'
-          'skia_enable_svg=true'
-          'skia_enable_skottie=true'
-          'skia_enable_skshaper=true'
-          'skia_enable_paragraph=true'
-          'skia_enable_effects=true'
-          'skia_enable_filters=true'
-          'skia_use_dng_sdk=false'
-          'skia_use_icu=false'
-          'skia_use_expat=true'
-          'skia_use_libheif=false'
-          'skia_use_libwebp_decode=false'
-          'skia_use_libwebp_encode=false'
-          'skia_use_x11=false'
-          'skia_use_gl=false'
-          'skia_use_vulkan=false'
-          'skia_use_metal=false'
-          'skia_use_angle=false'
-          'skia_use_direct3d=false'
-          'clang_win="C:\LLVM"'
-          'cc="clang"'
-          'cxx="clang++"'
-          'win_sdk_version="10.0.17763.0"'
-          'win_vc="C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC"'
-        )
-        
-        New-Item -ItemType Directory -Path $outDir -Force
-        $gnArgsString = $gnArgs -join "`n"
-        Set-Content -Path "$outDir\args.gn" -Value $gnArgsString
-        
-        bin/gn gen $outDir
+      # ---- 6. GN gen & ninja ----
+      - name: GN gen
+        working-directory: skia
+        run: gn gen out/${{ matrix.config }}
 
-    - name: Build Skia ${{ matrix.config }}
-      shell: pwsh
-      run: |
-        $outDir = "out\static_${{ matrix.config }}_x64"
-        ninja -C $outDir skia
+      - name: Ninja build
+        working-directory: skia
+        run: ninja -C out/${{ matrix.config }} skia
 
-    - name: Collect artifacts for ${{ matrix.config }}
-      shell: pwsh
-      run: |
-        $buildDir = "out\static_${{ matrix.config }}_x64"
-        $artifactDir = "skia_${{ matrix.config }}_x64"
-        
-        New-Item -ItemType Directory -Path $artifactDir -Force
-        New-Item -ItemType Directory -Path "$artifactDir\lib" -Force
-        New-Item -ItemType Directory -Path "$artifactDir\include" -Force
-        
-        Copy-Item "$buildDir\skia.lib" -Destination "$artifactDir\lib\"
-        Copy-Item -Path "include\*" -Destination "$artifactDir\include\" -Recurse -Force
-        
-        if (Test-Path "third_party") {
-          $thirdPartyHeaders = Get-ChildItem -Path "third_party" -Include "*.h", "*.hpp" -Recurse -File
-          foreach ($header in $thirdPartyHeaders) {
-            $relativePath = $header.FullName.Replace((Get-Location).Path + "\", "")
-            $destPath = "$artifactDir\$relativePath"
-            $destDir = Split-Path $destPath -Parent
-            if (!(Test-Path $destDir)) {
-              New-Item -ItemType Directory -Path $destDir -Force
-            }
-            Copy-Item $header.FullName -Destination $destPath
-          }
-        }
+      # ---- 7. 收集产物 ----
+      - name: Collect artifacts
+        shell: pwsh
+        working-directory: skia
+        run: |
+          $dst = "${{ github.workspace }}/skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}"
+          New-Item -ItemType Directory -Force "$dst/include","$dst/lib"
+          robocopy include "$dst/include" /E /NP /NFL /NDL >$null
+          Copy-Item out/${{ matrix.config }}/*.lib "$dst/lib"
+          Copy-Item out/${{ matrix.config }}/args.gn "$dst"
+          Copy-Item LICENSE "$dst"
+          7z a -tzip "${dst}.zip" "$dst/*"
 
-    - name: Upload ${{ matrix.config }} artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: skia-m142-${{ matrix.config }}-x64-static
-        path: skia_${{ matrix.config }}_x64/
-        retention-days: 30
+      # ---- 8. 上传 ----
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}
+          path: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
+
+      # ---- 9. Release（仅打 tag 时） ----
+      - name: Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
