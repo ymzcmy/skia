@@ -317,27 +317,37 @@ jobs:
           $config = "${{ matrix.config }}"
           $dst = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-static-${config}"
           
+          # 确保目标目录存在
           New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           
-          # 生成详细复制日志
-          $logPath = Join-Path $dst "robocopy.log"
-          robocopy "include" "$dst\include" /E /NP /NFL /NDL /R:1 /W:1 /LOG+:$logPath
+          # 复制 Skia 头文件，生成详细日志，仅在严重错误时中断
+          $logPath = Join-Path $dst "robocopy_include.log"  # 日志文件路径
+          robocopy "include" "$dst\include" /E /R:1 /W:1 /LOG+:$logPath  # 保留文件列表输出，便于排查
           $robocopyExitCode = $LASTEXITCODE
           
-          # 仅当退出码 >7 时才视为失败
+          # 处理 robocopy 退出码：仅 >7 视为失败（0-7 为成功或次要情况）
           if ($robocopyExitCode -gt 7) {
-            Write-Error "头文件复制失败，退出码: $robocopyExitCode"
-            # 输出日志内容以便排查
-            Get-Content $logPath | Write-Host
+            Write-Error "❌ 头文件复制失败！退出码: $robocopyExitCode"
+            Write-Host "📄 复制日志内容："
+            Get-Content $logPath | Write-Host  # 输出日志到控制台
             exit $robocopyExitCode
+          } else {
+            Write-Host "✅ 头文件复制完成（退出码: $robocopyExitCode，属于正常范围）"
           }
           
-          Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
-          Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
-          Copy-Item "LICENSE" -Destination "$dst" -Force
+          # 复制库文件、配置文件和许可证
+          Write-Host "📦 复制库文件..."
+          Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force -ErrorAction Stop
+          Write-Host "📦 复制构建配置..."
+          Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force -ErrorAction Stop
+          Write-Host "📦 复制许可证..."
+          Copy-Item "LICENSE" -Destination "$dst" -Force -ErrorAction Stop
           
-          Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
+          # 压缩产物（包含日志便于后续排查）
+          Write-Host "📦 压缩产物到 ${dst}.zip..."
+          Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force -ErrorAction Stop
+          Write-Host "✅ 产物收集完成！"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
