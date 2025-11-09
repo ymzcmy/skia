@@ -64,16 +64,15 @@ jobs:
       - name: Install LLVM (silent install)
         run: |
           curl -Lo llvm.exe ${{ env.LLVM_URL }}
-          # 显式指定当前目录下的 llvm.exe 执行安装
           ./llvm.exe /S /D="C:\Program Files\LLVM"
           echo "C:\Program Files\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
-      - name: Sync third-party dependencies (skip emsdk)
+      - name: Sync third-party dependencies (force skip emsdk)
         working-directory: skia
-        env:
-          NO_EMSCRIPTEN: 1
+        shell: cmd
         run: |
-          python tools/git-sync-deps --deps-target=win
+          set NO_EMSCRIPTEN=1
+          "C:\hostedtoolcache\windows\Python\3.9.13\x64\python.exe" tools/git-sync-deps --deps-target=win
 
       - name: Generate GN args
         shell: pwsh
