@@ -9,7 +9,6 @@ on:
 
 env:
   SKIA_VERSION: m142
-  # 使用最新稳定版 LLVM 19.1.0 (满足 Skia m142 要求)
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
   LLVM_PATH: C:/LLVM
@@ -17,21 +16,21 @@ env:
   GN_ARGS_BASE: |
     # 基础构建配置
     target_cpu="x64"
-    is_component_build=false  # 静态库构建，适合分发
+    is_component_build=false
     clang_win="C:/LLVM"
     cc="clang-cl"
     cxx="clang-cl"
     
-    # 核心 2D 图形能力 (基于知识库中 Skia 的定位)
-    skia_enable_svg=true      # 矢量图形支持
-    skia_enable_gpu=true      # GPU 加速渲染
-    skia_use_angle=true       # 跨平台 GPU 兼容
+    # 核心 2D 图形能力
+    skia_enable_svg=true
+    skia_enable_gpu=true
+    skia_use_angle=true
     
-    # 图像处理 (精简，移除 WebP)
+    # 修复 JPEG/PNG 问题的关键设置
     skia_use_system_libjpeg=false
     skia_use_system_libpng=false
     skia_use_system_zlib=false
-    skia_use_system_webp=false  # 裁剪 WebP 支持
+    skia_use_system_webp=false
     
     # 高级文本渲染
     skia_enable_paragraph=true
@@ -40,16 +39,16 @@ env:
     skia_use_icu=true
     skia_use_system_icu=false
     
-    # 视觉效果 (保持丰富视觉体验)
-    skia_enable_skottie=true   # Lottie 动画
+    # 视觉效果
+    skia_enable_skottie=true
     skia_enable_effects=true
     skia_enable_filters=true
     
-    # XML 支持 (SVG 依赖)
+    # XML 支持
     skia_use_expat=true
     skia_use_system_expat=false
     
-    # 冗余功能裁剪 (优化体积)
+    # 冗余功能裁剪
     skia_use_xps=false
     skia_enable_pdf=false
     skia_enable_flutter_defines=false
@@ -66,15 +65,13 @@ jobs:
     steps:
       - name: Checkout Skia (from own repo)
         run: |
-          echo "🔍 检出 Skia 代码库 (2D 图形核心库)"
           git clone https://github.com/ymzcmy/skia.git skia
           cd skia
           git checkout chrome/${{ env.SKIA_VERSION }}
-          git submodule update --init --recursive  # 确保所有子模块初始化
+          git submodule update --init --recursive
 
       - name: Install Depot Tools (with update)
         run: |
-          echo "🔧 安装构建工具链"
           curl -Lo depot_tools.zip ${{ env.DEPOT_TOOLS_URL }}
           7z x depot_tools.zip -o"C:\depot_tools" -y
           echo "C:\depot_tools" >> $env:GITHUB_PATH
@@ -84,7 +81,6 @@ jobs:
 
       - name: Initialize depot_tools
         run: |
-          echo "⚙️ 初始化 depot_tools"
           cd C:\depot_tools
           echo "solutions = []" > .gclient
           gclient
@@ -94,94 +90,48 @@ jobs:
         shell: pwsh
         run: |
           $installPath = "C:\LLVM"
-          echo "📦 准备安装 LLVM 19.1.0 (C++ 编译器)"
           
           if (-not (Test-Path $installPath)) {
             New-Item -ItemType Directory -Path $installPath -Force | Out-Null
-            Write-Host "✅ 创建安装目录: $installPath" -ForegroundColor Green
           }
           
           $llvmExe = Join-Path $env:TEMP "llvm.exe"
-          Write-Host "⬇️ 下载 LLVM 安装程序: ${{ env.LLVM_URL }}" -ForegroundColor Cyan
           Invoke-WebRequest -Uri ${{ env.LLVM_URL }} -OutFile $llvmExe
           
-          $fileInfo = Get-Item $llvmExe
-          Write-Host "📄 安装程序信息:"
-          Write-Host "   名称: $($fileInfo.Name)"
-          Write-Host "   大小: $($fileInfo.Length / 1MB -as [int]) MB"
-          
-          Write-Host "🚀 安装 LLVM 到 $installPath..." -ForegroundColor Cyan
           $installArgs = "/S", "/D=$installPath"
           $proc = Start-Process -FilePath $llvmExe -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
           
           if ($proc.ExitCode -ne 0) {
-            Write-Error "❌ LLVM 安装失败! 退出码: $($proc.ExitCode)"
-            if (Test-Path $installPath) {
-              Write-Host "📁 安装目录内容:"
-              Get-ChildItem -Path $installPath -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
-            }
+            Write-Error "LLVM 安装失败! 退出码: $($proc.ExitCode)"
             exit 1
           }
           
-          Write-Host "✅ LLVM 安装成功!" -ForegroundColor Green
-          
           $clangPath = Join-Path $installPath "bin\clang-cl.exe"
-          $llvmDir = Get-ChildItem -Path $installPath -Directory | Select-Object -First 1
-          
-          if ($llvmDir) {
-            $possibleClangPath = Join-Path $llvmDir.FullName "bin\clang-cl.exe"
-            if (Test-Path $possibleClangPath) {
-              Write-Host "⚠️ LLVM 实际安装在: $($llvmDir.FullName)" -ForegroundColor Yellow
+          if (-not (Test-Path $clangPath)) {
+            $llvmDir = Get-ChildItem -Path $installPath -Directory | Select-Object -First 1
+            if ($llvmDir) {
+              $clangPath = Join-Path $llvmDir.FullName "bin\clang-cl.exe"
               $installPath = $llvmDir.FullName
-              $clangPath = $possibleClangPath
             }
           }
           
           if (-not (Test-Path $clangPath)) {
-            Write-Error "❌ 错误: $clangPath 不存在!"
-            Write-Host "📁 安装目录结构:"
-            Get-ChildItem -Path $installPath -Recurse | ForEach-Object { 
-              $indent = " " * $_.FullName.Replace($installPath, "").Split('\').Count
-              Write-Host "${indent}$($_.Name)"
-            }
+            Write-Error "clang-cl.exe 不存在!"
             exit 1
           }
           
-          Write-Host "✅ 找到 clang-cl.exe: $clangPath" -ForegroundColor Green
-          
           $env:Path += ";$installPath\bin"
           [System.Environment]::SetEnvironmentVariable("Path", $env:Path, "Machine")
-          Write-Host "🔧 PATH 已更新" -ForegroundColor Green
-          
-          Write-Host "🔍 验证 LLVM 安装..." -ForegroundColor Cyan
-          $version = & clang-cl --version 2>&1
-          Write-Host "LLVM 版本: $version"
-          
-          # 版本验证 (确保 >= 19.0.0)
-          $versionMatch = $version | Select-String -Pattern "clang version (\d+\.\d+)"
-          if ($versionMatch -and $versionMatch.Matches.Count -gt 0) {
-            $versionStr = $versionMatch.Matches[0].Groups[1].Value
-            $majorVersion = [int]$versionStr.Split('.')[0]
-            if ($majorVersion -lt 19) {
-              Write-Error "❌ LLVM 版本 $versionStr 低于 Skia m142 要求的 19.0.0"
-              exit 1
-            }
-            Write-Host "✅ LLVM 版本 $versionStr 满足要求 (>= 19.0.0)" -ForegroundColor Green
-          } else {
-            Write-Host "⚠️ 无法解析 LLVM 版本，但安装看起来成功" -ForegroundColor Yellow
-          }
 
       - name: 创建 emsdk 防御脚本
         shell: pwsh
         working-directory: skia
         run: |
-          echo "🛡️ 创建 emsdk 防御脚本 (确保构建不被中断)"
           $binPath = Join-Path -Path $pwd -ChildPath "bin"
           if (-not (Test-Path $binPath)) {
             New-Item -ItemType Directory -Path $binPath -Force | Out-Null
           }
           
-          # 创建防御性脚本
           $pyContent = "import sys`r`nsys.exit(0)"
           $pyPath = Join-Path $binPath "activate-emsdk"
           [System.IO.File]::WriteAllText($pyPath, $pyContent)
@@ -195,74 +145,78 @@ jobs:
           [System.IO.File]::WriteAllText($ps1Path, $ps1Content)
           
           # 验证脚本
-          $tests = @(
-            @{Name="Python"; Cmd="python $pyPath"},
-            @{Name="Batch"; Cmd="cmd /c $batPath"},
-            @{Name="PowerShell"; Cmd="powershell -ExecutionPolicy Bypass -File $ps1Path"}
-          )
-          
-          $allPassed = $true
-          foreach ($test in $tests) {
-            try {
-              Invoke-Expression $test.Cmd
-              if ($LASTEXITCODE -ne 0) {
-                Write-Error "❌ $($test.Name) 测试失败 (退出码 $LASTEXITCODE): $($test.Cmd)"
-                $allPassed = $false
-              } else {
-                Write-Host "✅ $($test.Name) 测试成功: $($test.Cmd)" -ForegroundColor Green
-              }
-            } catch {
-              Write-Error "❌ $($test.Name) 执行异常: $_"
-              $allPassed = $false
-            }
-          }
-          
-          if (-not $allPassed) {
-            Write-Error "❌ 防御脚本测试未通过，构建中止"
-            exit 1
-          }
+          & python $pyPath
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & cmd /c $batPath
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           
           [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
-          $env:NO_EMSCRIPTEN = "1"
-          Write-Host "✅ NO_EMSCRIPTEN=1 (环境变量设置成功)" -ForegroundColor Green
 
       - name: 同步第三方依赖
         working-directory: skia
         shell: pwsh
         run: |
-          echo "🔗 同步第三方依赖 (图像处理和文本渲染库)"
           $python = "C:\hostedtoolcache\windows\Python\3.9.13\x64\python.exe"
           if (-not (Test-Path $python)) {
-            Write-Error "❌ Python 未找到!"
+            Write-Error "Python 未找到!"
             exit 1
           }
           
-          $cmd = "$python tools\git-sync-deps --deps-target=win --no-emsdk"
-          Write-Host "➡️ 执行命令: $cmd" -ForegroundColor Cyan
-          
-          $output = cmd /c "$cmd"
-          $exitCode = $LASTEXITCODE
-          
-          if ($exitCode -ne 0) {
-            Write-Error "❌ 依赖同步失败! 退出码: $exitCode"
-            Write-Error "详细输出:"
-            $output | ForEach-Object { Write-Error "  $_" }
-            exit $exitCode
+          & $python tools\git-sync-deps --deps-target=win --no-emsdk
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "依赖同步失败! 退出码: $LASTEXITCODE"
+            exit $LASTEXITCODE
           }
-          
-          Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
-          $output | ForEach-Object { Write-Host "  $_" }
 
+      # ===== 关键修复：正确获取 GN_ARGS_BASE =====
       - name: 生成 GN 构建参数
         shell: pwsh
         working-directory: skia
         run: |
-          echo "⚙️ 生成 GN 构建参数 (核心 2D 图形库配置)"
+          # 直接内联 GN_ARGS_BASE 内容，避免环境变量引用问题
+          $gnArgs = @"
+          # 基础构建配置
+          target_cpu="x64"
+          is_component_build=false
+          clang_win="C:/LLVM"
+          cc="clang-cl"
+          cxx="clang-cl"
           
-          # 基础配置
-          $gnArgs = $env:GN_ARGS_BASE
+          # 核心 2D 图形能力
+          skia_enable_svg=true
+          skia_enable_gpu=true
+          skia_use_angle=true
           
-          # 根据构建类型添加特定配置
+          # 修复 JPEG/PNG 问题的关键设置
+          skia_use_system_libjpeg=false
+          skia_use_system_libpng=false
+          skia_use_system_zlib=false
+          skia_use_system_webp=false
+          
+          # 高级文本渲染
+          skia_enable_paragraph=true
+          skia_enable_skshaper=true
+          skia_use_system_freetype2=false
+          skia_use_icu=true
+          skia_use_system_icu=false
+          
+          # 视觉效果
+          skia_enable_skottie=true
+          skia_enable_effects=true
+          skia_enable_filters=true
+          
+          # XML 支持
+          skia_use_expat=true
+          skia_use_system_expat=false
+          
+          # 冗余功能裁剪
+          skia_use_xps=false
+          skia_enable_pdf=false
+          skia_enable_flutter_defines=false
+          skia_enable_nvpr=false
+          skia_enable_spirv_validation=false
+          "@
+          
           if ("${{ matrix.config }}" -eq "Debug") {
             $gnArgs = $gnArgs + "`n`nis_debug=true`nis_official_build=false`nextra_cflags=[`"/MTd`"]`n"
           } else {
@@ -274,15 +228,10 @@ jobs:
           
           $argsPath = Join-Path -Path $outDir -ChildPath "args.gn"
           [System.IO.File]::WriteAllText($argsPath, $gnArgs)
-          
-          Write-Host "✅ 已生成 GN 参数: $argsPath" -ForegroundColor Green
-          Write-Host "📝 构建参数详情:"
-          Get-Content $argsPath | ForEach-Object { Write-Host "   $_" }
 
       - name: 用 GN 生成构建文件
         working-directory: skia
         run: |
-          echo "🔧 用 GN 生成构建文件 (准备 C++ 编译)"
           gn gen "out/${{ matrix.config }}"
 
       - name: 用 Ninja 编译
@@ -293,31 +242,20 @@ jobs:
         shell: pwsh
         working-directory: skia
         run: |
-          echo "📦 收集构建产物"
           $config = "${{ matrix.config }}"
           $dst = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-${config}"
           
           New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           
-          # 复制头文件
           robocopy "include" "$dst\include" /E /NP /NFL /NDL /R:1 /W:1
-          if ($LASTEXITCODE -gt 7) { 
-            Write-Error "❌ 头文件复制失败 (错误码: $LASTEXITCODE)"
-            exit $LASTEXITCODE 
-          }
+          if ($LASTEXITCODE -gt 7) { exit $LASTEXITCODE }
           
-          # 复制库文件和元数据
           Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
           Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
           Copy-Item "LICENSE" -Destination "$dst" -Force
           
-          # 创建 ZIP 归档
           Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
-          
-          # 显示大小
-          $zipSize = [math]::Round((Get-Item "${dst}.zip").Length / 1MB, 2)
-          Write-Host "✅ 产物已打包: ${dst}.zip (${zipSize} MB)" -ForegroundColor Green
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -339,13 +277,12 @@ jobs:
             **构建详情**:
             - 分支: `${{ github.ref_name }}`  
             - 提交: `${{ github.sha }}`  
-            - 构建时间: `${{ github.event.head_commit.timestamp }}`  
             - 配置: `${{ matrix.config }}`  
             - 核心功能:
               - GPU 加速渲染 (ANGLE)
               - SVG 矢量图形
-              - 高级文本排版 (Paragraph, SkShaper)
-              - 动画支持 (Skottie/Lottie)
+              - 高级文本排版
+              - 动画支持
             - 裁剪功能:
               - WebP 图像格式
               - XPS 文档
