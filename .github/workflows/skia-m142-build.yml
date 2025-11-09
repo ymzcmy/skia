@@ -1,4 +1,4 @@
-name: Build Skia m142 (Windows x64 static, LLVM)
+name: Build Skia m142 (Windows x64 Static, LLVM + vcpkg Static Libs)
 
 on:
   push:
@@ -12,7 +12,7 @@ env:
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
   LLVM_PATH: C:/LLVM
-  # 配置保持不变（启用系统库）
+  # 配置调整：启用系统静态库 + 指定 vcpkg 路径
   GN_ARGS_BASE: |
     target_cpu="x64"
     is_component_build=false
@@ -20,12 +20,14 @@ env:
     cc="clang-cl"
     cxx="clang-cl"
     
-    # 启用系统库（vcpkg 将安装所有依赖）
+    # 启用系统静态库（vcpkg 提供）
     skia_use_system_libjpeg=true
     skia_use_libjpeg_turbo=true
     skia_use_system_libpng=true
     skia_use_system_zlib=true
     skia_use_system_webp=true
+    skia_use_system_expat=true
+    skia_use_system_freetype2=true  # 改为使用系统 freetype 静态库
     
     # 核心 2D 图形能力
     skia_enable_svg=true
@@ -35,18 +37,13 @@ env:
     # 文本渲染
     skia_enable_paragraph=true
     skia_enable_skshaper=true
-    skia_use_system_freetype2=false
     skia_use_icu=true
-    skia_use_system_icu=false
+    skia_use_system_icu=false  # ICU 仍使用 Skia 内置
     
     # 视觉效果
     skia_enable_skottie=true
     skia_enable_effects=true
     skia_enable_filters=true
-    
-    # XML 支持
-    skia_use_expat=true
-    skia_use_system_expat=false
     
     # 冗余功能裁剪
     skia_use_xps=false
@@ -54,7 +51,7 @@ env:
     skia_enable_flutter_defines=false
     skia_enable_nvpr=false
     skia_enable_spirv_validation=false
-  RELEASE_NAME: "Skia-m142-Nightly-Windows"
+  RELEASE_NAME: "Skia-m142-Nightly-Windows-Static"
 
 jobs:
   build:
@@ -79,8 +76,8 @@ jobs:
           git checkout main
           git pull
 
-      # ===== 关键修复：安装所有系统依赖库 =====
-      - name: Install vcpkg and all dependencies
+      # ===== 关键修复：安装所有系统依赖库（静态库）=====
+      - name: Install vcpkg and all static dependencies
         shell: pwsh
         run: |
           # 安装 vcpkg
@@ -88,35 +85,30 @@ jobs:
           git clone https://github.com/microsoft/vcpkg.git
           .\vcpkg\bootstrap-vcpkg.bat
           
-          # 安装所有需要的库
-          Write-Host "🔧 安装所有依赖库..." -ForegroundColor Cyan
+          # 安装所有需要的静态库（triplet 改为 x64-windows-static）
+          Write-Host "🔧 安装所有静态依赖库..." -ForegroundColor Cyan
           .\vcpkg\vcpkg.exe install `
-            libjpeg-turbo:x64-windows `
-            libpng:x64-windows `
-            zlib:x64-windows `
-            libwebp:x64-windows `
-            expat:x64-windows `
-            freetype:x64-windows
+            libjpeg-turbo:x64-windows-static `
+            libpng:x64-windows-static `
+            zlib:x64-windows-static `
+            libwebp:x64-windows-static `
+            expat:x64-windows-static `
+            freetype:x64-windows-static
           
-          # 设置环境变量
+          # 设置环境变量（静态库路径）
           $vcpkgRoot = (Get-Location).Path + "\vcpkg"
-          $vcpkgTriplet = "x64-windows"
+          $vcpkgTriplet = "x64-windows-static"
           $vcpkgTripletPath = Join-Path $vcpkgRoot "installed\$vcpkgTriplet"
           
-          # 添加到 PATH
-          $env:PATH += ";$vcpkgTripletPath\bin;$vcpkgTripletPath\lib;$vcpkgTripletPath\tools"
-          [System.Environment]::SetEnvironmentVariable("PATH", $env:PATH, "Machine")
-          
-          # 设置 vcpkg 环境变量
+          # 记录 vcpkg 路径到环境变量（供后续 GN 配置使用）
           [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "Machine")
-          [System.Environment]::SetEnvironmentVariable("VCPKG_DEFAULT_TRIPLET", $vcpkgTriplet, "Machine")
+          [System.Environment]::SetEnvironmentVariable("VCPKG_TRIPLET", $vcpkgTriplet, "Machine")
           
           # 验证安装
-          Write-Host "✅ vcpkg 安装成功!"
-          Write-Host "✅ 所有依赖库安装成功!"
+          Write-Host "✅ vcpkg 静态库安装成功!"
           Write-Host "📁 vcpkg 路径: $vcpkgRoot"
           Write-Host "🔧 triplet: $vcpkgTriplet"
-          Write-Host "🔍 已安装库:"
+          Write-Host "🔍 已安装静态库头文件:"
           Get-ChildItem "$vcpkgTripletPath\include" | Where-Object { $_.Name -match "jpeg|png|zlib|webp|expat|freetype" } | ForEach-Object { "  - $($_.Name)" }
 
       - name: Initialize depot_tools
@@ -207,16 +199,25 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      - name: 生成 GN 构建参数
+      - name: 生成 GN 构建参数（含 vcpkg 静态库路径）
         shell: pwsh
         working-directory: skia
         run: |
           $gnArgs = $env:GN_ARGS_BASE
           
+          # 注入 vcpkg 静态库的头文件和库文件路径
+          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT")
+          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET")
+          $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
+          $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
+          
+          $gnArgs += "`n`nextra_cflags = [""-I$vcpkgInclude""]`n"
+          $gnArgs += "`n`nextra_ldflags = [""-L$vcpkgLib""]`n"
+          
           if ("${{ matrix.config }}" -eq "Debug") {
-            $gnArgs = $gnArgs + "`n`nis_debug=true`nis_official_build=false`nextra_cflags=[`"/MTd`"]`n"
+            $gnArgs += "`n`nis_debug=true`nis_official_build=false`nextra_cflags+=[`"/MTd`"]`n"
           } else {
-            $gnArgs = $gnArgs + "`n`nis_debug=false`nis_official_build=true`nextra_cflags=[`"/MT`"]`n"
+            $gnArgs += "`n`nis_debug=false`nis_official_build=true`nextra_cflags+=[`"/MT`"]`n"
           }
           
           $outDir = "out\${{ matrix.config }}"
@@ -225,11 +226,15 @@ jobs:
           $argsPath = Join-Path -Path $outDir -ChildPath "args.gn"
           [System.IO.File]::WriteAllText($argsPath, $gnArgs)
 
-      - name: 用 GN 生成构建文件
+      - name: 用 GN 生成构建文件（验证静态库）
         working-directory: skia
         run: |
-          # 验证头文件存在
-          Write-Host "🔍 验证系统库头文件是否存在..."
+          # 验证 vcpkg 静态库头文件
+          Write-Host "🔍 验证 vcpkg 静态库头文件是否存在..."
+          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT")
+          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET")
+          $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
+          
           $headers = @(
             "jpeglib.h",
             "png.h",
@@ -240,14 +245,37 @@ jobs:
           )
           
           foreach ($header in $headers) {
-            $path = "C:\vcpkg\installed\x64-windows\include\$header"
+            $path = Join-Path $vcpkgInclude $header
             if (Test-Path $path) {
               Write-Host "✅ $header 已找到"
             } else {
-              Write-Warning "⚠️ $header 未找到，但 vcpkg 应已安装"
+              Write-Error "❌ $header 未找到! vcpkg 静态库安装失败"
+              exit 1
             }
           }
           
+          # 验证 vcpkg 静态库文件
+          $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
+          $libs = @(
+            "jpeg.lib",
+            "png.lib",
+            "zlib.lib",
+            "webp.lib",
+            "expat.lib",
+            "freetype.lib"
+          )
+          
+          foreach ($lib in $libs) {
+            $path = Join-Path $vcpkgLib $lib
+            if (Test-Path $path) {
+              Write-Host "✅ $lib 已找到"
+            } else {
+              Write-Error "❌ $lib 未找到! vcpkg 静态库安装失败"
+              exit 1
+            }
+          }
+          
+          # 生成 GN 构建文件
           gn gen "out/${{ matrix.config }}"
 
       - name: 用 Ninja 编译
@@ -259,7 +287,7 @@ jobs:
         working-directory: skia
         run: |
           $config = "${{ matrix.config }}"
-          $dst = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-${config}"
+          $dst = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-static-${config}"
           
           New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
@@ -276,8 +304,8 @@ jobs:
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}
-          path: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
+          name: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}
+          path: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
 
       - name: 上传到 Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142'
@@ -286,7 +314,7 @@ jobs:
           name: ${{ env.RELEASE_NAME }}
           update: true
           body: |
-            **Skia m142 自动构建 (Windows x64)**
+            **Skia m142 自动构建 (Windows x64 静态库)**
             
             Skia 是一个完整的 2D 图形库，用于绘制**文本**、**几何图形**和**图像**。
             
@@ -299,15 +327,15 @@ jobs:
               - SVG 矢量图形
               - 高级文本排版
               - 动画支持 (Skottie)
-            - 依赖 (通过 vcpkg 安装):
-              - libjpeg-turbo
-              - libpng
-              - zlib
-              - libwebp
-              - expat
-              - freetype
+            - 静态依赖 (通过 vcpkg 安装):
+              - libjpeg-turbo (静态)
+              - libpng (静态)
+              - zlib (静态)
+              - libwebp (静态)
+              - expat (静态)
+              - freetype (静态)
             
-            > 此构建针对 Windows x64 平台，使用 vcpkg 管理所有系统依赖
-          files: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
+            > 此构建针对 Windows x64 平台，所有依赖均为静态库，可直接集成到项目中
+          files: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
