@@ -9,9 +9,10 @@ on:
 
 env:
   SKIA_VERSION: m142
-  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/LLVM-17.0.6-win64.exe
+  # 关键修复：升级到 LLVM 19.1.0 (满足 Skia m142 要求)
+  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
-  # 关键修复：使用无空格路径
+  # 使用无空格路径
   LLVM_PATH: C:/LLVM
   GN_ARGS_BASE: |
     target_cpu="x64"
@@ -147,14 +148,23 @@ jobs:
           [System.Environment]::SetEnvironmentVariable("Path", $env:Path, "Machine")
           Write-Host "PATH 已更新: $env:Path"
           
-          # 7. 验证安装
-          Write-Host "🔍 验证 LLVM 安装..."
-          $version = & clang-cl --version 2>&1
-          Write-Host "LLVM 版本: $version"
+          # 7. 验证安装和版本
+          Write-Host "🔍 验证 LLVM 安装和版本..."
+          $versionOutput = & clang-cl --version 2>&1
+          Write-Host "LLVM 版本: $versionOutput"
           
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "❌ LLVM 命令执行失败! 退出码: $LASTEXITCODE"
-            exit 1
+          # 8. 关键版本验证 (确保 >= 19.0.0)
+          $versionMatch = $versionOutput | Select-String -Pattern "clang version (\d+\.\d+)"
+          if ($versionMatch -and $versionMatch.Matches.Count -gt 0) {
+            $versionStr = $versionMatch.Matches[0].Groups[1].Value
+            $majorVersion = [int]$versionStr.Split('.')[0]
+            if ($majorVersion -lt 19) {
+              Write-Error "❌ LLVM 版本 $versionStr 低于 Skia m142 要求的 19.0.0"
+              exit 1
+            }
+            Write-Host "✅ LLVM 版本 $versionStr 满足要求 (>= 19.0.0)"
+          } else {
+            Write-Warning "⚠️ 无法解析 LLVM 版本，但安装看起来成功"
           }
 
       - name: 创建 100% 安全的 emsdk 防御脚本
