@@ -11,12 +11,14 @@ env:
   SKIA_VERSION: m142
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/LLVM-17.0.6-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
+  # 关键修复：使用无空格路径
   LLVM_PATH: C:/LLVM
   GN_ARGS_BASE: |
     target_cpu="x64"
     is_official_build=true
     is_component_build=false
     is_debug=false
+    # 使用无空格路径
     clang_win="C:/LLVM"
     cc="clang-cl"
     cxx="clang-cl"
@@ -63,28 +65,33 @@ jobs:
           git checkout main
           git pull
 
-      # ===== 关键修复：使用 cmd shell 避免语法冲突 =====
-      - name: Install LLVM (silent install)
-        shell: cmd
-        run: |
-          mkdir C:\LLVM
-          curl -Lo llvm.exe %LLVM_URL%
-          llvm.exe /S /D="C:\LLVM"
-          if not exist "C:\LLVM\bin\clang-cl.exe" (
-            echo LLVM installation failed!
-            exit 1
-          )
-          echo C:\LLVM\bin >> %GITHUB_PATH%
-          clang-cl --version
-
-      - name: Initialize depot_tools
+      # ===== 关键修复：depot_tools 初始化 =====
+      - name: Initialize depot_tools (解决 python3_bin_reldir.txt 问题)
         run: |
           cd C:\depot_tools
           echo "solutions = []" > .gclient
           gclient
           del .gclient
 
-      - name: 创建 emsdk 防御脚本
+      # ===== 关键修复：安装 LLVM 到无空格路径 =====
+      - name: Install LLVM (silent install)
+        run: |
+          # 创建无空格安装目录
+          mkdir C:\LLVM
+          curl -Lo llvm.exe ${{ env.LLVM_URL }}
+          # 安装到无空格路径
+          ./llvm.exe /S /D="C:\LLVM"
+          # 验证安装
+          if not exist "C:\LLVM\bin\clang-cl.exe" (
+            echo "LLVM installation failed! clang-cl.exe not found."
+            exit 1
+          )
+          # 添加到 PATH
+          echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+          # 验证版本
+          clang-cl --version
+
+      - name: 创建 100% 安全的 emsdk 防御脚本
         shell: pwsh
         working-directory: skia
         run: |
@@ -93,21 +100,50 @@ jobs:
             New-Item -ItemType Directory -Path $binPath -Force | Out-Null
           }
           
-          # 创建 Python 格式防御脚本
+          # 创建三种格式的防御脚本
           $pyContent = "import sys`r`nsys.exit(0)"
           $pyPath = Join-Path $binPath "activate-emsdk"
           [System.IO.File]::WriteAllText($pyPath, $pyContent)
           
-          # 创建 Batch 格式防御脚本
           $batContent = "@echo off`r`nexit /b 0"
           $batPath = Join-Path $binPath "activate-emsdk.bat"
           [System.IO.File]::WriteAllText($batPath, $batContent)
           
-          # 验证脚本
-          & python $pyPath
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          & cmd /c $batPath
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $ps1Content = "exit 0"
+          $ps1Path = Join-Path $binPath "activate-emsdk.ps1"
+          [System.IO.File]::WriteAllText($ps1Path, $ps1Content)
+          
+          # 验证所有脚本
+          $tests = @(
+            @{Name="Python"; Cmd="python $pyPath"},
+            @{Name="Batch"; Cmd="cmd /c $batPath"},
+            @{Name="PowerShell"; Cmd="powershell -ExecutionPolicy Bypass -File $ps1Path"}
+          )
+          
+          $allPassed = $true
+          foreach ($test in $tests) {
+            try {
+              Invoke-Expression $test.Cmd
+              if ($LASTEXITCODE -ne 0) {
+                Write-Error "❌ $($test.Name) 测试失败 (退出码 $LASTEXITCODE): $($test.Cmd)"
+                $allPassed = $false
+              } else {
+                Write-Host "✅ $($test.Name) 测试成功: $($test.Cmd)"
+              }
+            } catch {
+              Write-Error "❌ $($test.Name) 执行异常: $_"
+              $allPassed = $false
+            }
+          }
+          
+          if (-not $allPassed) {
+            Write-Error "❌ 防御脚本测试未通过，构建中止"
+            exit 1
+          }
+          
+          [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
+          $env:NO_EMSCRIPTEN = "1"
+          Write-Host "✅ NO_EMSCRIPTEN=1 (进程级 + 当前会话)"
 
       - name: 同步第三方依赖
         working-directory: skia
@@ -115,15 +151,25 @@ jobs:
         run: |
           $python = "C:\hostedtoolcache\windows\Python\3.9.13\x64\python.exe"
           if (-not (Test-Path $python)) {
-            Write-Error "Python not found!"
+            Write-Error "❌ Python 未找到!"
             exit 1
           }
           
-          & $python tools\git-sync-deps --deps-target=win --no-emsdk
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Dependency sync failed!"
-            exit $LASTEXITCODE
+          $cmd = "$python tools\git-sync-deps --deps-target=win --no-emsdk"
+          Write-Host "➡️ 执行命令: $cmd"
+          
+          $output = cmd /c "$cmd"
+          $exitCode = $LASTEXITCODE
+          
+          if ($exitCode -ne 0) {
+            Write-Error "❌ 依赖同步失败! 退出码: $exitCode"
+            Write-Error "详细输出:"
+            $output | ForEach-Object { Write-Error "  $_" }
+            exit $exitCode
           }
+          
+          Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
+          $output | ForEach-Object { Write-Host "  $_" }
 
       - name: 生成 GN 构建参数
         shell: pwsh
@@ -168,10 +214,19 @@ jobs:
           
           $argsPath = Join-Path -Path $outDir -ChildPath "args.gn"
           [System.IO.File]::WriteAllText($argsPath, $gnArgs)
+          
+          Write-Host "✅ 已生成 GN 参数: $argsPath"
+          Get-Content $argsPath
 
+      # ===== 关键修复：验证 LLVM 路径 =====
       - name: 用 GN 生成构建文件
         working-directory: skia
         run: |
+          echo "验证 LLVM 路径..."
+          dir "C:\LLVM\lib"
+          echo "PATH: %PATH%"
+          gclient --version
+          gn --version
           gn gen "out/${{ matrix.config }}"
 
       - name: 用 Ninja 编译
@@ -189,13 +244,16 @@ jobs:
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           
           robocopy "include" "$dst\include" /E /NP /NFL /NDL /R:1 /W:1
-          if ($LASTEXITCODE -gt 7) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -gt 7) { 
+            Write-Error "头文件复制失败 (错误码: $LASTEXITCODE)"; exit $LASTEXITCODE 
+          }
           
           Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
           Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
           Copy-Item "LICENSE" -Destination "$dst" -Force
           
           Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
+          Write-Host "📦 产物已打包: ${dst}.zip"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -203,20 +261,22 @@ jobs:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}
           path: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
 
-      - name: 上传到 Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142'
+      - name: 上传到固定 Release (覆盖更新)
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v1
         with:
           name: ${{ env.RELEASE_NAME }}
           update: true
           body: |
-            **Automatic Build**  
-            - Branch: `${{ github.ref_name }}`  
-            - Commit: `${{ github.sha }}`  
-            - Configuration: `${{ matrix.config }}`  
-            - Skia Version: `${{ env.SKIA_VERSION }}`  
+            **自动构建产物**  
+            - 分支: `${{ github.ref_name }}`  
+            - 提交: `${{ github.sha }}`  
+            - 构建时间: `${{ github.event.head_commit.timestamp }}`  
+            - 配置: `${{ matrix.config }}`  
+            - Skia 版本: `${{ env.SKIA_VERSION }}`  
+            - GitHub Runner: `${{ runner.os }}-${{ runner.arch }}`  
             
-            > This release is automatically updated with the latest build
+            > 注: 此 Release 会被新构建覆盖更新
           files: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
