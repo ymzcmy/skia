@@ -348,35 +348,83 @@ jobs:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}
           path: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
 
-      - name: 上传到 Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142'
-        uses: softprops/action-gh-release@v1
-        with:
-          name: ${{ env.RELEASE_NAME }}
-          update: true
-          body: |
-            **Skia m142 自动构建 (Windows x64 静态库)**
-            
-            Skia 是一个完整的 2D 图形库，用于绘制**文本**、**几何图形**和**图像**。
-            
-            **构建详情**:
-            - 分支: `${{ github.ref_name }}`  
-            - 提交: `${{ github.sha }}`  
-            - 配置: `${{ matrix.config }}`  
-            - 核心功能:
-              - GPU 加速渲染 (ANGLE)
-              - SVG 矢量图形
-              - 高级文本排版
-              - 动画支持 (Skottie)
-            - 静态依赖 (通过 vcpkg 安装):
-              - libjpeg-turbo (静态)
-              - libpng (静态)
-              - zlib (静态)
-              - libwebp (静态)
-              - expat (静态)
-              - freetype (静态)
-            
-            > 此构建针对 Windows x64 平台，所有依赖均为静态库，可直接集成到项目中
-          files: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ===== 步骤1：仅对 Release 配置自动创建标签 =====
+- name: 🏷️ 自动创建或更新 Release 标签
+  if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142' && matrix.config == 'Release'
+  shell: pwsh
+  run: |
+    # 配置 Git
+    git config user.name "github-actions"
+    git config user.email "github-actions@github.com"
+    
+    # 拉取最新标签
+    git fetch --tags
+    
+    # 使用精确标签名 (包含版本、平台、配置)
+    $tagPrefix = "windows-x64"
+    $tagSuffix = if ("${{ matrix.config }}" -eq "Release") { "release" } else { "debug" }
+    $tagName = "m142-$tagPrefix-$tagSuffix"
+    
+    # 检查标签是否存在
+    $tagExists = git rev-parse --quiet --verify "refs/tags/$tagName"
+    
+    if ($tagExists) {
+      # 标签存在，更新它指向最新提交
+      Write-Host "🔄 更新现有标签: $tagName"
+      git tag -d $tagName
+      git push --delete origin $tagName
+    } else {
+      Write-Host "🆕 创建新标签: $tagName"
+    }
+    
+    # 创建新标签
+    git tag $tagName
+    git push --tags
+    
+    # 设置输出变量供后续步骤使用
+    echo "TAG_NAME=$tagName" >> $env:GITHUB_OUTPUT
+  id: create_tag
+
+# ===== 步骤2：仅上传 Release 配置到 GitHub Release =====
+- name: 🚀 上传到 Release
+  if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142' && matrix.config == 'Release'
+  uses: softprops/action-gh-release@v2  # 推荐使用 v2
+  with:
+    # 使用上一步创建的标签
+    tag_name: ${{ steps.create_tag.outputs.TAG_NAME }}
+    name: ${{ env.RELEASE_NAME }}
+    prerelease: false
+    body: |
+      **Skia m142 自动构建 (Windows x64 静态库)**
+      
+      Skia 是一个完整的 2D 图形库，用于绘制**文本**、**几何图形**和**图像**。
+      
+      **构建详情**:
+      - 分支: `${{ github.ref_name }}`  
+      - 提交: `${{ github.sha }}`  
+      - 配置: `${{ matrix.config }}`  
+      - 核心功能:
+        - GPU 加速渲染 (ANGLE)
+        - SVG 矢量图形
+        - 高级文本排版
+        - 动画支持 (Skottie)
+      - 静态依赖 (通过 vcpkg 安装):
+        - libjpeg-turbo (静态)
+        - libpng (静态)
+        - zlib (静态)
+        - libwebp (静态)
+        - expat (静态)
+        - freetype (静态)
+      
+      > 此构建针对 Windows x64 平台，所有依赖均为静态库
+    files: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# ===== 步骤3：上传 Debug 配置为 Artifact (不创建 Release) =====
+- name: 📦 上传 Debug 构建产物 (不创建 Release)
+  if: matrix.config == 'Debug'
+  uses: actions/upload-artifact@v4
+  with:
+    name: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}
+    path: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
