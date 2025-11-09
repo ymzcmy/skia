@@ -76,20 +76,33 @@ jobs:
       # ===== 关键修复：安装 LLVM 到无空格路径 =====
       - name: Install LLVM (silent install)
         run: |
-          # 创建无空格安装目录
-          mkdir C:\LLVM
-          curl -Lo llvm.exe ${{ env.LLVM_URL }}
-          # 安装到无空格路径
-          ./llvm.exe /S /D="C:\LLVM"
+          # 创建安装目录
+          $installPath = "C:\LLVM"
+          if (-not (Test-Path $installPath)) {
+            New-Item -ItemType Directory -Path $installPath -Force | Out-Null
+          }
+          
+          # 下载 LLVM
+          $llvmExe = Join-Path $env:TEMP "llvm.exe"
+          Invoke-WebRequest -Uri ${{ env.LLVM_URL }} -OutFile $llvmExe
+          
+          # 安装 LLVM
+          & $llvmExe /S /D=$installPath
+          
           # 验证安装
-          if not exist "C:\LLVM\bin\clang-cl.exe" (
-            echo "LLVM installation failed! clang-cl.exe not found."
+          $clangPath = Join-Path $installPath "bin\clang-cl.exe"
+          if (-not (Test-Path $clangPath)) {
+            Write-Error "LLVM installation failed! $clangPath not found."
             exit 1
-          )
+          }
+          
           # 添加到 PATH
-          echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+          $env:Path += ";$installPath\bin"
+          [System.Environment]::SetEnvironmentVariable("Path", $env:Path, "Machine")
+          
           # 验证版本
-          clang-cl --version
+          Write-Host "LLVM version:"
+          & clang-cl --version
 
       - name: 创建 100% 安全的 emsdk 防御脚本
         shell: pwsh
