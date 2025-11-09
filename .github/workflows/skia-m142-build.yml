@@ -69,23 +69,32 @@ jobs:
           ./llvm.exe /S /D="C:\Program Files\LLVM"
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
-      - name: 彻底禁用 activate-emsdk (Windows 路径兼容)
+      # ===== 修复后的 emsdk 禁用步骤 =====
+      - name: 彻底禁用 activate-emsdk (Windows 路径安全版)
         working-directory: skia
         shell: pwsh
         run: |
+          # 使用绝对路径确保正确解析
+          $rootDir = (Resolve-Path -Path ".").Path
           $emsdkScripts = @(
-            (Join-Path -Path "bin" -ChildPath "activate-emsdk"),
-            (Join-Path -Path "bin" -ChildPath "activate-emsdk.bat"),
-            (Join-Path -Path "bin" -ChildPath "activate-emsdk.ps1")
+            (Join-Path -Path $rootDir -ChildPath "bin\activate-emsdk"),
+            (Join-Path -Path $rootDir -ChildPath "bin\activate-emsdk.bat"),
+            (Join-Path -Path $rootDir -ChildPath "bin\activate-emsdk.ps1")
           )
+          
           foreach ($script in $emsdkScripts) {
             if (Test-Path -LiteralPath $script -ErrorAction SilentlyContinue) {
-              $newName = $script + ".disabled"
+              # 获取纯文件名（不含路径）
+              $fileName = Split-Path -Path $script -Leaf
+              $newName = "${fileName}.disabled"
+              
+              # 仅重命名文件名，不改变路径
               Rename-Item -LiteralPath $script -NewName $newName -Force
-              Write-Host "已禁用: $script -> $newName" -ForegroundColor Green
+              Write-Host "✅ 已禁用: $fileName -> $newName" -ForegroundColor Green
             }
             else {
-              Write-Host "跳过: $script 不存在" -ForegroundColor Yellow
+              $fileName = Split-Path -Path $script -Leaf
+              Write-Host "🟡 跳过: $fileName 不存在" -ForegroundColor Yellow
             }
           }
 
