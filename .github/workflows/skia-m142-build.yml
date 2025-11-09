@@ -1,4 +1,4 @@
-name: Build Skia m142 (Windows x64 static, LLVM)
+vname: Build Skia m142 (Windows x64 static, LLVM)
 
 on:
   push:
@@ -69,51 +69,87 @@ jobs:
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
           clang-cl --version
 
-      # ===== 终极修复：创建最简防御脚本 =====
-      - name: 设置 NO_EMSCRIPTEN 环境变量 (终极防御)
+      # ===== 100% 可靠的防御脚本创建 =====
+      - name: 创建绝对可靠的 emsdk 防御机制
         shell: pwsh
         working-directory: skia
         run: |
-          # 1. 设置环境变量
-          [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
-          Write-Host "✅ NO_EMSCRIPTEN = 1 (进程级)"
-          
-          # 2. 创建 bin 目录 (如果不存在)
+          # 1. 确保 bin 目录存在
           $binPath = Join-Path -Path $pwd -ChildPath "bin"
           if (-not (Test-Path $binPath)) {
             New-Item -ItemType Directory -Path $binPath -Force | Out-Null
             Write-Host "📁 创建目录: $binPath"
           }
           
-          # 3. 创建最简防御脚本 (确保返回退出码 0)
-          @(        
-            @{Name = "activate-emsdk"; Content = "exit 0"},
-            @{Name = "activate-emsdk.bat"; Content = "@exit /b 0"},
-            @{Name = "activate-emsdk.ps1"; Content = "exit 0"}
-          ) | ForEach-Object {
-            $scriptPath = Join-Path -Path $binPath -ChildPath $_.Name
-            # 使用 ASCII 编码避免 BOM 问题
-            $_.Content | Out-File -FilePath $scriptPath -Encoding ASCII -Force
-            Write-Host "🛡️  创建防御脚本: $scriptPath"
-            Write-Host "   内容: '$($_.Content)'"
+          # 2. 创建防御脚本 (确保 Windows 能正确执行)
+          $scripts = @(
+            # 无扩展名 (实际是批处理内容)
+            @{Name = "activate-emsdk"; 
+              Content = "@echo off`r`nexit /b 0"; 
+              Encoding = "ASCII"},
             
-            # 设置文件权限
-            icacls $scriptPath /grant:r "Everyone:(F)" /T /C /Q > $null
+            # .bat 版本 (Windows 优先)
+            @{Name = "activate-emsdk.bat"; 
+              Content = "@echo off`r`nexit /b 0"; 
+              Encoding = "ASCII"},
+            
+            # .ps1 版本 (作为后备)
+            @{Name = "activate-emsdk.ps1"; 
+              Content = "exit 0"; 
+              Encoding = "UTF8"}
+          )
+          
+          foreach ($script in $scripts) {
+            $scriptPath = Join-Path -Path $binPath -ChildPath $script.Name
+            
+            # 写入文件（特殊处理换行符）
+            $script.Content | Out-File -FilePath $scriptPath -Encoding $script.Encoding -Force
+            
+            # 设置文件属性
+            attrib -R $scriptPath 2>$null
+            
+            Write-Host "🛡️ 创建: $scriptPath"
+            Write-Host "   内容: '$($script.Content -replace '`r','\\r' -replace '`n','\\n')'"
+            
+            # 验证文件内容
+            $content = Get-Content $scriptPath -Raw
+            Write-Host "   验证内容: '$($content.Trim() -replace '`r','\\r' -replace '`n','\\n')'"
           }
           
-          # 4. 验证文件存在 (不执行)
-          Get-ChildItem -Path $binPath -Filter "activate-emsdk*" | ForEach-Object {
-            Write-Host "🔍 验证存在: $($_.FullName) (大小: $($_.Length) 字节)"
+          # 3. 验证脚本可执行性
+          Write-Host "`n🔍 验证防御脚本执行:"
+          
+          # 测试无扩展名脚本
+          cmd /c "bin\activate-emsdk"
+          $exitCode = $LASTEXITCODE
+          Write-Host "   无扩展名脚本: 退出码 $exitCode"
+          if ($exitCode -ne 0) {
+            Write-Warning "⚠️ 无扩展名脚本未返回 0，但将继续尝试其他方法"
           }
+          
+          # 测试 .bat 脚本
+          cmd /c "bin\activate-emsdk.bat"
+          $exitCode = $LASTEXITCODE
+          Write-Host "   .bat 脚本: 退出码 $exitCode"
+          
+          # 测试 .ps1 脚本
+          powershell -ExecutionPolicy Bypass -Command "bin\activate-emsdk.ps1; exit $LASTEXITCODE"
+          $exitCode = $LASTEXITCODE
+          Write-Host "   .ps1 脚本: 退出码 $exitCode"
+          
+          # 4. 设置环境变量
+          $env:NO_EMSCRIPTEN = "1"
+          [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
+          Write-Host "`n✅ NO_EMSCRIPTEN=1 (环境变量设置)"
 
-      # ===== 同步步骤 (确保环境变量传递) =====
-      - name: 同步第三方依赖 (终极防御)
+      # ===== 100% 可靠的同步步骤 =====
+      - name: 同步第三方依赖 (最终确认)
         working-directory: skia
         shell: pwsh
         run: |
-          # 显式设置环境变量
-          $env:NO_EMSCRIPTEN = "1"
-          Write-Host "✅ NO_EMSCRIPTEN = $env:NO_EMSCRIPTEN"
+          # 确认环境变量
+          Write-Host "环境变量验证:"
+          Write-Host "NO_EMSCRIPTEN = $env:NO_EMSCRIPTEN"
           
           # 使用绝对路径调用 Python
           $python = "C:\hostedtoolcache\windows\Python\3.9.13\x64\python.exe"
@@ -122,19 +158,37 @@ jobs:
             exit 1
           }
           
-          # 通过 cmd 执行命令，避免 PowerShell 执行策略问题
-          $cmd = "$python tools\git-sync-deps --deps-target=win"
-          Write-Host "➡️ 执行命令: $cmd"
+          # 执行同步命令 (添加 --no-emsdk 参数)
+          $cmd = "$python tools\git-sync-deps --deps-target=win --no-emsdk"
+          Write-Host "`n➡️ 执行命令: $cmd"
           
-          # 关键：使用 cmd.exe 执行，避免 PowerShell 执行策略限制
-          $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -Wait -PassThru -NoNewWindow
+          # 使用 cmd.exe 执行，捕获完整输出
+          $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -Wait -PassThru -NoNewWindow -RedirectStandardOutput "sync_output.txt" -RedirectStandardError "sync_error.txt"
+          
+          # 显示输出
+          Write-Host "`n命令输出:"
+          Get-Content "sync_output.txt" | ForEach-Object { Write-Host "OUT: $_" }
+          
+          Write-Host "`n错误输出:"
+          if (Test-Path "sync_error.txt") {
+            Get-Content "sync_error.txt" | ForEach-Object { Write-Host "ERR: $_" }
+          }
           
           if ($process.ExitCode -ne 0) {
-            Write-Error "❌ 依赖同步失败! 退出码: $($process.ExitCode)"
+            Write-Error "`n❌ 依赖同步失败! 退出码: $($process.ExitCode)"
+            
+            # 尝试诊断失败原因
+            Write-Host "`n🔍 诊断信息:"
+            Write-Host "当前目录: $(pwd)"
+            Write-Host "bin 目录内容:"
+            Get-ChildItem "bin" -Filter "activate-emsdk*" | ForEach-Object {
+              Write-Host "  $($_.Name) - 大小: $($_.Length) 字节"
+            }
+            
             exit $process.ExitCode
           }
           else {
-            Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
+            Write-Host "`n✅ 依赖同步成功!" -ForegroundColor Green
           }
 
       - name: 生成 GN 构建参数
@@ -189,7 +243,8 @@ jobs:
           
           # 创建 ZIP 归档
           Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
-          Write-Host "📦 产物已打包: ${dst}.zip (大小: $((Get-Item ${dst}.zip).Length / 1MB -f 2) MB)"
+          $zipSize = (Get-Item "${dst}.zip").Length / 1MB
+          Write-Host "📦 产物已打包: ${dst}.zip (大小: $($zipSize.ToString('F2')) MB)"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
