@@ -119,6 +119,12 @@ jobs:
             Write-Error "❌ vcpkg 静态库路径不存在！"
             exit 1
           }
+          $vcpkgRoot = (Get-Location).Path + "\vcpkg"
+          $vcpkgTriplet = "x64-windows-static"
+          $vcpkgLibPath = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
+
+          Write-Host "🔍 列出 vcpkg 静态库目录所有文件："
+          Get-ChildItem $vcpkgLibPath | ForEach-Object { "  - $($_.Name)" }
           Write-Host "✅ vcpkg 静态库安装成功!"
 
       - name: Initialize depot_tools
