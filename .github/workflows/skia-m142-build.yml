@@ -24,9 +24,9 @@ env:
     cc="clang-cl"
     cxx="clang-cl"
     extra_cflags=["/MT"]
-    skia_use_system_libjpeg=true
-    skia_use_system_libpng=true
-    skia_use_system_zlib=true
+    skia_use_system_libjpeg=false
+    skia_use_system_libpng=false
+    skia_use_system_zlib=false
     skia_use_system_freetype2=false
     skia_use_system_harfbuzz=false
     skia_use_system_webp=false
