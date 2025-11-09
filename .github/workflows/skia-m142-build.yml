@@ -280,7 +280,7 @@ jobs:
           $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
           $libs = @(
             "jpeg.lib",
-            "png.lib",
+            "libpng16.lib",
             "zlib.lib",
             "webp.lib",
             "expat.lib",
