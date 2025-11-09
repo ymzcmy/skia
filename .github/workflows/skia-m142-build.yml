@@ -71,7 +71,6 @@ jobs:
         working-directory: skia
         shell: pwsh
         run: |
-          # 检查并禁用可能存在的 activate-emsdk 脚本（包括不同扩展名）
           $emsdkScripts = @(
             "bin/activate-emsdk",
             "bin/activate-emsdk.bat",
@@ -79,7 +78,7 @@ jobs:
           )
           foreach ($script in $emsdkScripts) {
             if (Test-Path $script) {
-              Rename-Item -Path $script -NewName "$script.disabled" -Force
+              Rename-Item -Path $script -NewName "$($script).disabled" -Force
               Write-Host "Disabled: $script"
             }
           }
