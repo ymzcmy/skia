@@ -237,6 +237,7 @@ jobs:
           Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
           $output | ForEach-Object { Write-Host "  $_" }
 
+      # ===== 关键修复：处理 Debug 和 Release 的 is_official_build =====
       - name: 生成 GN 构建参数
         shell: pwsh
         working-directory: skia
@@ -271,6 +272,8 @@ jobs:
           "@
           
           if ("${{ matrix.config }}" -eq "Debug") {
+            # 关键修复：Debug 构建时 is_official_build 应为 false
+            $gnArgs = $gnArgs.Replace('is_official_build=true', 'is_official_build=false')
             $gnArgs = $gnArgs.Replace('is_debug=false', 'is_debug=true')
             $gnArgs = $gnArgs.Replace('extra_cflags=["/MT"]', 'extra_cflags=["/MTd"]')
           }
