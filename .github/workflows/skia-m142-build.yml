@@ -38,6 +38,8 @@ env:
     skia_use_xps=false
     skia_enable_gpu=false
     skia_use_angle=false
+  # 固定 Release 名称 (每次覆盖更新)
+  RELEASE_NAME: "Skia-m142-Nightly-Windows"
 
 jobs:
   build:
@@ -56,7 +58,7 @@ jobs:
         run: |
           curl -Lo depot_tools.zip ${{ env.DEPOT_TOOLS_URL }}
           7z x depot_tools.zip -o"C:\depot_tools" -y
-          echo "C:\depot_tools" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+          echo "C:\depot_tools" >> $env:GITHUB_PATH
           cd C:\depot_tools
           git checkout main
           git pull
@@ -65,75 +67,103 @@ jobs:
         run: |
           curl -Lo llvm.exe ${{ env.LLVM_URL }}
           ./llvm.exe /S /D="C:\Program Files\LLVM"
-          echo "C:\Program Files\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
-      - name: Physically disable activate-emsdk (彻底移除触发文件)
+      - name: 彻底禁用 activate-emsdk (Windows 路径兼容)
         working-directory: skia
         shell: pwsh
         run: |
           $emsdkScripts = @(
-            "bin/activate-emsdk",
-            "bin/activate-emsdk.bat",
-            "bin/activate-emsdk.ps1"
+            (Join-Path -Path "bin" -ChildPath "activate-emsdk"),
+            (Join-Path -Path "bin" -ChildPath "activate-emsdk.bat"),
+            (Join-Path -Path "bin" -ChildPath "activate-emsdk.ps1")
           )
           foreach ($script in $emsdkScripts) {
-            if (Test-Path $script) {
-              Rename-Item -Path $script -NewName "$($script).disabled" -Force
-              Write-Host "Disabled: $script"
+            if (Test-Path -LiteralPath $script -ErrorAction SilentlyContinue) {
+              $newName = $script + ".disabled"
+              Rename-Item -LiteralPath $script -NewName $newName -Force
+              Write-Host "已禁用: $script -> $newName" -ForegroundColor Green
+            }
+            else {
+              Write-Host "跳过: $script 不存在" -ForegroundColor Yellow
             }
           }
 
-      - name: Sync third-party dependencies (force skip emsdk)
+      - name: 同步第三方依赖 (强制跳过 emsdk)
         working-directory: skia
         shell: cmd
         run: |
           set NO_EMSCRIPTEN=1
-          "C:\hostedtoolcache\windows\Python\3.9.13\x64\python.exe" tools/git-sync-deps --deps-target=win
+          python tools\git-sync-deps --deps-target=win
 
-      - name: Generate GN args
+      - name: 生成 GN 构建参数
         shell: pwsh
         working-directory: skia
         run: |
           $args = "${{ env.GN_ARGS_BASE }}"
           if ("${{ matrix.config }}" -eq "Debug") {
-            $args = $args.Replace('is_debug=false','is_debug=true')
-                         .Replace('extra_cflags=["/MT"]','extra_cflags=["/MTd"]')
+            $args = $args.Replace('is_debug=false', 'is_debug=true')
+                         .Replace('extra_cflags=["/MT"]', 'extra_cflags=["/MTd"]')
           }
-          New-Item -ItemType Directory -Force -Path "out/${{ matrix.config }}"
-          $args | Out-File -FilePath "out/${{ matrix.config }}/args.gn" -Encoding utf8
+          $outDir = "out\${{ matrix.config }}"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $args | Out-File -FilePath "${outDir}\args.gn" -Encoding utf8
 
-      - name: Generate build files with GN
+      - name: 用 GN 生成构建文件
         working-directory: skia
-        run: gn gen out/${{ matrix.config }}
+        run: gn gen "out/${{ matrix.config }}"
 
-      - name: Build with Ninja
+      - name: 用 Ninja 编译
         working-directory: skia
-        run: ninja -C out/${{ matrix.config }} skia
+        run: ninja -C "out/${{ matrix.config }}" skia
 
-      - name: Collect artifacts
+      - name: 收集构建产物
         shell: pwsh
         working-directory: skia
         run: |
-          $dst = "${{ github.workspace }}/skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}"
-          New-Item -ItemType Directory -Force -Path "$dst/include"
-          New-Item -ItemType Directory -Force -Path "$dst/lib"
+          $config = "${{ matrix.config }}"
+          $dst = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-${config}"
           
-          robocopy include "$dst/include" /E /NP /NFL /NDL
-          if ($LASTEXITCODE -le 7) { exit 0 } else { exit $LASTEXITCODE }
+          New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
+          New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           
-          Copy-Item out/${{ matrix.config }}/*.lib "$dst/lib"
-          Copy-Item out/${{ matrix.config }}/args.gn "$dst"
-          Copy-Item LICENSE "$dst"
-          7z a -tzip "${dst}.zip" "$dst/*"
+          robocopy "include" "$dst\include" /E /NP /NFL /NDL /R:1 /W:1
+          if ($LASTEXITCODE -gt 7) { 
+            Write-Error "头文件复制失败 (错误码: $LASTEXITCODE)"; exit $LASTEXITCODE 
+          }
+          
+          Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
+          Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
+          Copy-Item "LICENSE" -Destination "$dst" -Force
+          
+          Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
 
-      - name: Upload build artifact
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}
           path: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
 
-      - name: Upload to Release (on tag push)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      # ===== 关键修改：每次成功构建后覆盖更新固定 Release =====
+      - name: 上传到固定 Release (覆盖更新)
+        # 仅在 main 分支的 push 事件或手动触发时上传 (避免 PR 污染 Release)
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v1
         with:
+          # 指定固定 Release 名称 (会覆盖同名 Release)
+          name: ${{ env.RELEASE_NAME }}
+          # 覆盖更新已有 Release
+          update: true
+          # 附加构建信息
+          body: |
+            **自动构建产物**  
+            - 分支: `${{ github.ref_name }}`  
+            - 提交: `${{ github.sha }}`  
+            - 构建时间: `${{ github.event.head_commit.timestamp }}`  
+            - 配置: `${{ matrix.config }}`  
+            - Skia 版本: `${{ env.SKIA_VERSION }}`  
+            
+            > 注: 此 Release 会被新构建覆盖更新
           files: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
