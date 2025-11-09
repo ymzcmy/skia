@@ -12,27 +12,28 @@ env:
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
   LLVM_PATH: C:/LLVM
-  # 优化的核心 2D 图形功能配置
-  GN_ARGS_BASE: |
-    # 基础构建配置
+  # 关键修复：直接内联所有配置，确保不被覆盖
+  GN_ARGS: |
     target_cpu="x64"
     is_component_build=false
+    is_debug=false
     clang_win="C:/LLVM"
     cc="clang-cl"
     cxx="clang-cl"
+    extra_cflags=["/MT"]
     
     # 核心 2D 图形能力
     skia_enable_svg=true
     skia_enable_gpu=true
     skia_use_angle=true
     
-    # 修复 JPEG/PNG 问题的关键设置
+    # 图像处理 (禁用系统库，使用内置实现)
     skia_use_system_libjpeg=false
     skia_use_system_libpng=false
     skia_use_system_zlib=false
     skia_use_system_webp=false
     
-    # 高级文本渲染
+    # 文本渲染
     skia_enable_paragraph=true
     skia_enable_skshaper=true
     skia_use_system_freetype2=false
@@ -54,6 +55,7 @@ env:
     skia_enable_flutter_defines=false
     skia_enable_nvpr=false
     skia_enable_spirv_validation=false
+
   RELEASE_NAME: "Skia-m142-Nightly-Windows"
 
 jobs:
@@ -168,48 +170,39 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      # ===== 关键修复：正确获取 GN_ARGS_BASE =====
+      # ===== 关键修复：确保配置正确应用 =====
       - name: 生成 GN 构建参数
         shell: pwsh
         working-directory: skia
         run: |
-          # 直接内联 GN_ARGS_BASE 内容，避免环境变量引用问题
           $gnArgs = @"
-          # 基础构建配置
           target_cpu="x64"
           is_component_build=false
           clang_win="C:/LLVM"
           cc="clang-cl"
           cxx="clang-cl"
+          extra_cflags=["/MT"]
           
-          # 核心 2D 图形能力
-          skia_enable_svg=true
-          skia_enable_gpu=true
-          skia_use_angle=true
-          
-          # 修复 JPEG/PNG 问题的关键设置
+          # 确保这些关键设置生效
           skia_use_system_libjpeg=false
           skia_use_system_libpng=false
           skia_use_system_zlib=false
           skia_use_system_webp=false
+          skia_use_system_freetype2=false
+          skia_use_system_icu=false
+          skia_use_system_expat=false
           
-          # 高级文本渲染
+          # 其他配置
+          skia_enable_svg=true
+          skia_enable_gpu=true
+          skia_use_angle=true
           skia_enable_paragraph=true
           skia_enable_skshaper=true
-          skia_use_system_freetype2=false
-          skia_use_icu=true
-          skia_use_system_icu=false
-          
-          # 视觉效果
           skia_enable_skottie=true
           skia_enable_effects=true
           skia_enable_filters=true
-          
-          # XML 支持
           skia_use_expat=true
-          skia_use_system_expat=false
-          
-          # 冗余功能裁剪
+          skia_use_icu=true
           skia_use_xps=false
           skia_enable_pdf=false
           skia_enable_flutter_defines=false
@@ -282,7 +275,7 @@ jobs:
               - GPU 加速渲染 (ANGLE)
               - SVG 矢量图形
               - 高级文本排版
-              - 动画支持
+              - 动画支持 (Skottie)
             - 裁剪功能:
               - WebP 图像格式
               - XPS 文档
