@@ -13,7 +13,7 @@ env:
 
 jobs:
   build-windows-static:
-    runs-on: windows-2019
+    runs-on: windows-latest
     
     strategy:
       matrix:
