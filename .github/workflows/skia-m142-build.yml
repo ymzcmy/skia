@@ -11,12 +11,15 @@ env:
   SKIA_VERSION: m142
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/LLVM-17.0.6-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
+  # 关键修复：避免路径空格问题
+  LLVM_PATH: C:/LLVM
   GN_ARGS_BASE: |
     target_cpu="x64"
     is_official_build=true
     is_component_build=false
     is_debug=false
-    clang_win="C:/Program Files/LLVM"
+    # 关键修复：使用无空格路径
+    clang_win="${{ env.LLVM_PATH }}"
     cc="clang-cl"
     cxx="clang-cl"
     extra_cflags=["/MT"]
@@ -62,24 +65,32 @@ jobs:
           git checkout main
           git pull
 
-      # ===== 关键修复：depot_tools 初始化 =====
-      - name: Initialize depot_tools (解决 python3_bin_reldir.txt 问题)
-        run: |
-          # 必须在 depot_tools 目录下运行
-          cd C:\depot_tools
-          # 创建空的 .gclient 文件 (欺骗 gclient)
-          echo "solutions = []" > .gclient
-          # 运行 gclient 初始化
-          gclient
-          # 清理临时文件
-          del .gclient
-
+      # ===== 关键修复：LLVM 无空格安装 =====
       - name: Install LLVM (silent install)
         run: |
+          # 创建无空格安装路径
+          mkdir C:\LLVM
           curl -Lo llvm.exe ${{ env.LLVM_URL }}
-          ./llvm.exe /S /D="C:\Program Files\LLVM"
-          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+          # 静默安装到无空格路径
+          ./llvm.exe /S /D="C:\LLVM"
+          # 验证安装
+          if not exist "C:\LLVM\bin\clang-cl.exe" (
+            echo "LLVM installation failed!"
+            exit 1
+          )
+          echo "LLVM installed successfully"
+          # 添加到 PATH
+          echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+          # 验证版本
           clang-cl --version
+
+      # ===== depot_tools 初始化 (关键) =====
+      - name: Initialize depot_tools
+        run: |
+          cd C:\depot_tools
+          echo "solutions = []" > .gclient
+          gclient
+          del .gclient
 
       - name: 创建 100% 安全的 emsdk 防御脚本
         shell: pwsh
@@ -161,6 +172,7 @@ jobs:
           Write-Host "✅ 依赖同步成功!" -ForegroundColor Green
           $output | ForEach-Object { Write-Host "  $_" }
 
+      # ===== GN 参数生成 (无空格路径) =====
       - name: 生成 GN 构建参数
         shell: pwsh
         working-directory: skia
@@ -170,7 +182,7 @@ jobs:
           is_official_build=true
           is_component_build=false
           is_debug=false
-          clang_win="C:/Program Files/LLVM"
+          clang_win="C:/LLVM"
           cc="clang-cl"
           cxx="clang-cl"
           extra_cflags=["/MT"]
@@ -208,16 +220,17 @@ jobs:
           Write-Host "✅ 已生成 GN 参数: $argsPath"
           Get-Content $argsPath
 
-      # ===== 关键修复：确保 depot_tools 已正确初始化 =====
+      # ===== 关键修复：验证 LLVM 路径 =====
       - name: 用 GN 生成构建文件
         working-directory: skia
         run: |
-          # 确保 depot_tools 在 PATH 中
-          echo "PATH: %PATH%"
-          # 验证 gclient 和 gn 是否可用
+          # 验证 LLVM 路径
+          echo "LLVM Path: ${{ env.LLVM_PATH }}"
+          dir "${{ env.LLVM_PATH }}\lib\clang"
+          # 验证工具
           gclient --version
           gn --version
-          # 执行构建
+          # 生成构建文件
           gn gen "out/${{ matrix.config }}"
 
       - name: 用 Ninja 编译
