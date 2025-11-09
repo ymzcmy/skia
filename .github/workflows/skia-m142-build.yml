@@ -53,7 +53,24 @@ jobs:
     - name: Sync dependencies
       shell: pwsh
       run: |
-        python tools/git-sync-deps
+        $maxAttempts = 3
+        $attempt = 1
+        do {
+          try {
+            python tools/git-sync-deps
+            break
+          } catch {
+            Write-Host "Attempt $attempt failed: $($_.Exception.Message)"
+            $attempt++
+            if ($attempt -le $maxAttempts) {
+              Write-Host "Retrying in 5 seconds..."
+              Start-Sleep -Seconds 5
+            } else {
+              Write-Error "All attempts failed"
+              throw
+            }
+          }
+        } while ($attempt -le $maxAttempts)
 
     - name: Configure build for ${{ matrix.config }}
       shell: pwsh
