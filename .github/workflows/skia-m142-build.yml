@@ -283,8 +283,8 @@ jobs:
             "libpng16.lib",
             "zlib.lib",
             "libwebp.lib",
-            "libexpat.lib",
-            "libfreetype.lib"
+            "expat.lib",
+            "freetype.lib"
           )
           
           foreach ($lib in $libs) {
