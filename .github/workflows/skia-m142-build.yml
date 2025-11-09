@@ -48,10 +48,8 @@ jobs:
     steps:
       - name: Checkout Skia (from own repo)
         run: |
-          # 拉取自己维护的 Skia 仓库
           git clone https://github.com/ymzcmy/skia.git skia
           cd skia
-          # 检出目标分支（确保你的仓库中存在该分支）
           git checkout chrome/${{ env.SKIA_VERSION }}
 
       - name: Install Depot Tools (with update)
@@ -60,7 +58,8 @@ jobs:
           7z x depot_tools.zip -o"C:\depot_tools" -y
           echo "C:\depot_tools" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
           cd C:\depot_tools
-          git pull
+          git checkout main  # 切换到默认分支
+          git pull           # 更新到最新版本
 
       - name: Install LLVM (silent install)
         run: |
