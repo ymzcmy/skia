@@ -133,37 +133,6 @@ jobs:
             Copy-Item $header.FullName -Destination $destPath
           }
         }
-        
-        # 创建使用说明 - 修正后的版本
-        $readmeContent = @"
-Skia ${{ env.SKIA_VERSION }} Static Library (${{ matrix.config }})
-Build Date: $(Get-Date -Format "yyyy-MM-dd")
-Target: Windows x64 (Windows 7+ Compatible)
-Compiler: LLVM/Clang 14.0.0
-Build Type: Static Library
-
-Features Enabled:
-- skia_use_system_libjpeg=true
-- skia_use_system_libpng=true
-- skia_use_system_zlib=true
-- skia_use_system_freetype2=false
-- skia_use_system_harfbuzz=false
-- skia_use_system_webp=false
-- skia_enable_svg=true
-- skia_enable_skottie=true
-- skia_enable_skshaper=true
-- skia_enable_paragraph=true
-- skia_enable_effects=true
-- skia_enable_filters=true
-
-Usage:
-1. Add 'include' directory to your project includes
-2. Link against 'lib/skia.lib'
-3. Ensure required system libraries (jpeg, png, zlib) are available
-
-Note: This build is compatible with Windows 7 and later.
-"@
-        Set-Content -Path "$artifactDir\README.txt" -Value $readmeContent
 
     - name: Upload ${{ matrix.config }} artifacts
       uses: actions/upload-artifact@v4
