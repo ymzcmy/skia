@@ -1,287 +1,188 @@
-name: Skia Static Build (Windows x64 Debug & Release, chrome/m142, UI Advanced, No DLL)
+name: Build Skia M142 Static Libraries with LLVM
 
 on:
-  workflow_dispatch:
-    inputs:
-      skia_branch:
-        description: 'Skia branch to build (e.g., chrome/m142)'
-        required: false
-        default: 'chrome/m142'
-      skia_commit:
-        description: 'Specific Skia commit hash'
-        required: false
-        default: '8e83e49cba3a28671d07661d88bddc3e84ae132d'
   push:
-    branches: [ chrome/m142 ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ chrome/m142 ]
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  SKIA_VERSION: chrome/m142  # 指定m142分支
+  BUILD_TYPE: Static
 
 jobs:
-  build-windows:
-    runs-on: windows-2022
+  build-windows-static:
+    runs-on: windows-2019  # 兼容Win7的SDK版本
+    
     strategy:
       matrix:
         config: [Debug, Release]
-      fail-fast: false
-
+    
     steps:
-      # 1. 验证预装的 Visual Studio 环境
-      - name: Verify Visual Studio Environment
-        shell: powershell
-        run: |
-          $vsPaths = @(
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build",
-            "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build"
-          )
-          
-          $selectedVsPath = $null
-          foreach ($path in $vsPaths) {
-            if (Test-Path $path) {
-              $selectedVsPath = $path
-              break
+    - name: Checkout Skia
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ env.SKIA_VERSION }}
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install depot_tools
+      shell: pwsh
+      run: |
+        # 下载depot_tools
+        Invoke-WebRequest -Uri "https://storage.googleapis.com/chrome-infra/depot_tools.zip" -OutFile "depot_tools.zip"
+        Expand-Archive -Path "depot_tools.zip" -DestinationPath "C:\depot_tools"
+        # 设置环境变量
+        echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" >> $env:GITHUB_ENV
+        echo "C:\depot_tools" >> $env:GITHUB_PATH
+
+    - name: Install LLVM
+      shell: pwsh
+      run: |
+        # 下载并安装LLVM
+        Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.0/LLVM-14.0.0-win64.exe" -OutFile "llvm-installer.exe"
+        Start-Process -FilePath ".\llvm-installer.exe" -ArgumentList "/S", "/D=C:\LLVM" -Wait
+        echo "C:\LLVM\bin" >> $env:GITHUB_PATH
+
+    - name: Install dependencies
+      shell: pwsh
+      run: |
+        # 安装必要的工具
+        choco install -y ninja
+        
+    - name: Sync dependencies
+      shell: pwsh
+      run: |
+        # 同步Skia依赖[citation:1][citation:4]
+        python tools/git-sync-deps
+
+    - name: Configure build for ${{ matrix.config }}
+      shell: pwsh
+      run: |
+        $outDir = "out\static_${{ matrix.config }}_x64"
+        
+        # 生成GN配置参数
+        $gnArgs = @(
+          'is_debug=' + ('true' -eq ('${{ matrix.config }}' -eq 'Debug'))
+          'is_official_build=' + ('true' -eq ('${{ matrix.config }}' -eq 'Release'))
+          'is_component_build=false'  # 静态库
+          'target_cpu="x64"'
+          'skia_use_system_libjpeg=true'
+          'skia_use_system_libpng=true'
+          'skia_use_system_zlib=true'
+          'skia_use_system_freetype2=false'
+          'skia_use_system_harfbuzz=false'
+          'skia_use_system_webp=false'
+          'skia_enable_svg=true'
+          'skia_enable_skottie=true'
+          'skia_enable_skshaper=true'
+          'skia_enable_paragraph=true'
+          'skia_enable_effects=true'
+          'skia_enable_filters=true'
+          'skia_use_dng_sdk=false'
+          'skia_use_icu=false'
+          'skia_use_expat=true'
+          'skia_use_libheif=false'
+          'skia_use_libwebp_decode=false'
+          'skia_use_libwebp_encode=false'
+          'skia_use_x11=false'
+          'skia_use_gl=false'
+          'skia_use_vulkan=false'
+          'skia_use_metal=false'
+          'skia_use_angle=false'
+          'skia_use_direct3d=false'
+          'clang_win="C:\LLVM"'
+          'cc="clang"'
+          'cxx="clang++"'
+          'win_sdk_version="10.0.17763.0"'  # 兼容Win7的SDK版本
+          'win_vc="C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC"'
+          'extra_cflags=' + ('["/MTd"]' -eq ('${{ matrix.config }}' -eq 'Debug') -replace '^', '"' -replace '$', '"')
+          'extra_ldflags=' + ('["/MTd"]' -eq ('${{ matrix.config }}' -eq 'Debug') -replace '^', '"' -replace '$', '"')
+        )
+        
+        # 创建构建目录和配置文件
+        New-Item -ItemType Directory -Path $outDir -Force
+        $gnArgsString = $gnArgs -join "`n"
+        Set-Content -Path "$outDir\args.gn" -Value $gnArgsString
+        
+        # 生成构建文件
+        bin/gn gen $outDir
+
+    - name: Build Skia ${{ matrix.config }}
+      shell: pwsh
+      run: |
+        $outDir = "out\static_${{ matrix.config }}_x64"
+        ninja -C $outDir skia
+
+    - name: Collect artifacts for ${{ matrix.config }}
+      shell: pwsh
+      run: |
+        $buildDir = "out\static_${{ matrix.config }}_x64"
+        $artifactDir = "skia_${{ matrix.config }}_x64"
+        
+        # 创建制品目录结构
+        New-Item -ItemType Directory -Path $artifactDir -Force
+        New-Item -ItemType Directory -Path "$artifactDir\lib" -Force
+        New-Item -ItemType Directory -Path "$artifactDir\include" -Force
+        
+        # 复制静态库文件
+        Copy-Item "$buildDir\skia.lib" -Destination "$artifactDir\lib\"
+        
+        # 复制头文件[citation:1]
+        Copy-Item -Path "include\*" -Destination "$artifactDir\include\" -Recurse -Force
+        
+        # 复制必要的第三方头文件
+        if (Test-Path "third_party") {
+          $thirdPartyHeaders = Get-ChildItem -Path "third_party" -Include "*.h", "*.hpp" -Recurse -File
+          foreach ($header in $thirdPartyHeaders) {
+            $relativePath = $header.FullName.Replace((Get-Location).Path + "\", "")
+            $destPath = "$artifactDir\$relativePath"
+            $destDir = Split-Path $destPath -Parent
+            if (!(Test-Path $destDir)) {
+              New-Item -ItemType Directory -Path $destDir -Force
             }
+            Copy-Item $header.FullName -Destination $destPath
           }
-          
-          if (-not $selectedVsPath) {
-            Write-Error "Visual Studio 2022 not found in any expected locations."
-            exit 1
-          }
-          
-          Write-Host "Using Visual Studio at: $selectedVsPath"
-          Write-Host "##[add-path]$selectedVsPath"
-          $env:PATH = "$selectedVsPath;$env:PATH"
-          
-          # 验证关键工具
-          if (-not (Get-Command vcvarsall.bat -ErrorAction SilentlyContinue)) {
-            Write-Error "vcvarsall.bat not found in PATH"
-            exit 1
-          }
+        }
+        
+        # 创建使用说明
+        $readmeContent = @"
+Skia ${{ env.SKIA_VERSION }} Static Library (${{ matrix.config }})
+Build Date: $(Get-Date -Format "yyyy-MM-dd")
+Target: Windows x64 (Windows 7+ Compatible)
+Compiler: LLVM/Clang 14.0.0
+Build Type: Static Library
 
-      # 2. 拉取Skia源码（指定精确的commit）
-      - name: Checkout Skia source
-        uses: actions/checkout@v4
-        with:
-          repository: google/skia
-          ref: ${{ github.event.inputs.skia_commit || '8e83e49cba3a28671d07661d88bddc3e84ae132d' }}
-          submodules: recursive
-          fetch-depth: 0
-          clean: true
-          path: skia-source
+Features Enabled:
+- skia_use_system_libjpeg=true
+- skia_use_system_libpng=true
+- skia_use_system_zlib=true
+- skia_use_system_freetype2=false
+- skia_use_system_harfbuzz=false
+- skia_use_system_webp=false
+- skia_enable_svg=true
+- skia_enable_skottie=true
+- skia_enable_skshaper=true
+- skia_enable_paragraph=true
+- skia_enable_effects=true
+- skia_enable_filters=true
 
-      # 3. 配置Python环境（修复Windows应用执行别名问题）
-      - name: Configure Python Environment
-        shell: powershell
-        run: |
-          # 检查Python版本
-          $pythonVersion = python --version 2>&1
-          Write-Host "Python version: $pythonVersion"
-          
-          # 创建python3.exe别名
-          $pythonDir = (Get-Command python).Path | Split-Path
-          if (-not (Test-Path "$pythonDir\python3.exe")) {
-            Copy-Item "$pythonDir\python.exe" "$pythonDir\python3.exe"
-            Write-Host "Created python3.exe alias at $pythonDir"
-          }
-          
-          # 验证python3可用
-          python3 --version
+Usage:
+1. Add '$artifactDir/include' to your include directories
+2. Link against '$artifactDir/lib/skia.lib'
+3. Ensure required system libraries (jpeg, png, zlib) are available
 
-      # 4. 构建GN工具（Skia内置构建系统）
-      - name: Build GN Tool
-        working-directory: skia-source/third_party/gn
-        shell: cmd
-        run: |
-          python build/gen.py --no-last-commit-position
-          ninja -C out
-          mkdir ..\..\bin 2>nul
-          copy out\gn.exe ..\..\bin\gn.exe /Y
+Note: This build is compatible with Windows 7 and later.
+"@
+        Set-Content -Path "$artifactDir\README.txt" -Value $readmeContent
 
-      # 5. 验证GN工具
-      - name: Verify GN Tool
-        working-directory: skia-source
-        shell: cmd
-        run: bin\gn.exe --version
-
-      # 6. 为Release配置精确的GN参数（按照您的要求定制）
-      - name: Configure GN Args (Release)
-        if: matrix.config == 'Release'
-        working-directory: skia-source
-        shell: cmd
-        run: |
-          call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || call "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-          
-          set OUTPUT_DIR=out\windows.x64.Release
-          
-          bin\gn.exe gen %OUTPUT_DIR% --ide="vs2022" --sln="skia" --args^
-          "target_cpu=\"x64\" ^^^
-          is_component_build=false ^^^
-          is_static_lib=true ^^^
-          is_debug=false ^^^
-          is_official_build=true ^^^
-          skia_enable_gpu=true ^^^
-          skia_use_direct3d=true ^^^
-          d3d11_enabled=true ^^^
-          d3d12_enabled=true ^^^
-          skia_use_opengl=false ^^^
-          skia_use_vulkan=false ^^^
-          skia_use_system_libjpeg=true ^^^
-          skia_use_system_libpng=true ^^^
-          skia_enable_svg=true ^^^
-          skia_use_system_freetype2=false ^^^
-          skia_use_system_harfbuzz=false ^^^
-          skia_enable_clear_type=true ^^^
-          skia_enable_animation=true ^^^
-          skia_enable_skottie=true ^^^
-          skia_skottie_enable_hardware_accel=true ^^^
-          skia_enable_blur=true ^^^
-          optimize=\"speed\" ^^^
-          enable_link_time_optimization=true ^^^
-          gpu_cache_size_limit_bytes=536870912 ^^^
-          extra_cflags=[\"/MT\"] ^^^
-          target_os=\"windows\" ^^^
-          skia_enable_pdf=false ^^^
-          skia_use_pdfium=false ^^^
-          skia_enable_perfetto=false ^^^
-          skia_enable_tests=false ^^^
-          experimental_enable_any=false ^^^
-          win_sdk_version=\"10.0.22621.0\""
-          
-          echo GN arguments configured for Release build
-
-      # 7. 为Debug配置精确的GN参数（按照您的要求定制，仅运行时库不同）
-      - name: Configure GN Args (Debug)
-        if: matrix.config == 'Debug'
-        working-directory: skia-source
-        shell: cmd
-        run: |
-          call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || call "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-          
-          set OUTPUT_DIR=out\windows.x64.Debug
-          
-          bin\gn.exe gen %OUTPUT_DIR% --ide="vs2022" --sln="skia" --args^
-          "target_cpu=\"x64\" ^^^
-          is_component_build=false ^^^
-          is_static_lib=true ^^^
-          is_debug=true ^^^
-          is_official_build=false ^^^
-          skia_enable_gpu=true ^^^
-          skia_use_direct3d=true ^^^
-          d3d11_enabled=true ^^^
-          d3d12_enabled=true ^^^
-          skia_use_opengl=false ^^^
-          skia_use_vulkan=false ^^^
-          skia_use_system_libjpeg=true ^^^
-          skia_use_system_libpng=true ^^^
-          skia_enable_svg=true ^^^
-          skia_use_system_freetype2=false ^^^
-          skia_use_system_harfbuzz=false ^^^
-          skia_enable_clear_type=true ^^^
-          skia_enable_animation=true ^^^
-          skia_enable_skottie=true ^^^
-          skia_skottie_enable_hardware_accel=true ^^^
-          skia_enable_blur=true ^^^
-          optimize=\"none\" ^^^
-          enable_link_time_optimization=false ^^^
-          gpu_cache_size_limit_bytes=536870912 ^^^
-          extra_cflags=[\"/MTd\"] ^^^
-          target_os=\"windows\" ^^^
-          skia_enable_pdf=false ^^^
-          skia_use_pdfium=false ^^^
-          skia_enable_perfetto=false ^^^
-          skia_enable_tests=false ^^^
-          experimental_enable_any=false ^^^
-          win_sdk_version=\"10.0.22621.0\""
-          
-          echo GN arguments configured for Debug build
-
-      # 8. 编译Skia静态库
-      - name: Build Skia Static Library (${{ matrix.config }})
-        working-directory: skia-source
-        shell: cmd
-        run: |
-          call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" || call "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-          
-          if "${{ matrix.config }}"=="Release" (
-            set OUTPUT_DIR=out\windows.x64.Release
-          ) else (
-            set OUTPUT_DIR=out\windows.x64.Debug
-          )
-          
-          ninja -C %OUTPUT_DIR% -j 4 skia
-        timeout-minutes: 60
-
-      # 9. 验证构建结果
-      - name: Verify Build Outputs (${{ matrix.config }})
-        working-directory: skia-source
-        shell: powershell
-        run: |
-          $config = "${{ matrix.config }}"
-          $outputDir = "out\windows.x64.$config"
-          $libPath = "$outputDir\skia.lib"
-          
-          if (-not (Test-Path $libPath)) {
-            Write-Error "skia.lib not found at $libPath"
-            Get-ChildItem $outputDir -Recurse | Format-List
-            exit 1
-          }
-          
-          $libSize = (Get-Item $libPath).Length / 1MB
-          Write-Host "✅ Found skia.lib at $libPath"
-          Write-Host "Size: $libSize MB"
-
-      # 10. 打包静态库和头文件
-      - name: Package ${{ matrix.config }}
-        working-directory: skia-source
-        shell: powershell
-        run: |
-          $config = "${{ matrix.config }}"
-          $outputDir = "out\windows.x64.$config"
-          $packageDir = "..\package\$config"
-          
-          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-          New-Item -ItemType Directory -Force -Path "$packageDir\include" | Out-Null
-          
-          # 复制静态库
-          Copy-Item "$outputDir\skia.lib" -Destination "$packageDir\" -Force
-          
-          # 复制需要的头文件
-          $includes = @(
-            "include/core",
-            "include/gpu",
-            "include/effects",
-            "include/codec",
-            "include/svg",
-            "include/pathops",
-            "include/utils",
-            "include/ports",
-            "modules/skottie/include",
-            "modules/skshaper/include",
-            "modules/skparagraph/include"
-          )
-          
-          foreach ($include in $includes) {
-            $dest = "$packageDir\include\" + ($include -replace 'include/', '')
-            New-Item -ItemType Directory -Force -Path $dest | Out-Null
-            robocopy "$include" "$dest" *.h *.hpp /E /NJH /NJS /NFL /NDL | Out-Null
-          }
-          
-          # 生成构建信息
-          "Skia chrome/m142 static build (Windows x64)" | Out-File "$packageDir\BUILD_INFO.txt"
-          "Configuration: $config" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "Commit: ${{ github.event.inputs.skia_commit || '8e83e49cba3a28671d07661d88bddc3e84ae132d' }}" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "Build date: $(Get-Date -Format 'yyyy-MM-dd HH:mm')" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "Features enabled:" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "- GPU: Direct3D 11 & 12" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "- Text rendering: ClearType, Skia internal FreeType/HarfBuzz" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "- Animation: Basic animations, Skottie (hardware accelerated)" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "- Effects: Blur, SVG support" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-          "- Runtime: MT (static linking)" | Out-File -Append "$packageDir\BUILD_INFO.txt"
-
-      # 11. 上传构建产物
-      - name: Upload Artifact ${{ matrix.config }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: skia-windows-x64-static-${{ matrix.config }}-m142
-          path: package/${{ matrix.config }}
-          retention-days: 30
+    - name: Upload ${{ matrix.config }} artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: skia-m142-${{ matrix.config }}-x64-static
+        path: skia_${{ matrix.config }}_x64/
+        retention-days: 30
