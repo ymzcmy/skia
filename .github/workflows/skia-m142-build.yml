@@ -289,7 +289,7 @@ jobs:
             "libpng16.lib",
             "zlib.lib",
             "libwebp.lib",
-            "expat.lib",
+            "libexpatMT.lib",
             "freetype.lib"
           )
           
