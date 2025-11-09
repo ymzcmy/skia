@@ -1,91 +1,84 @@
-name: Build Skia m142 – Windows x64 static (LLVM)
+name: Build Skia m142 (Windows x64 static, LLVM)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:        # 手动触发
   push:
     tags:
-      - 'v*'
+      - 'v*'                 # 打 tag 时自动触发
 
 env:
   SKIA_VERSION: m142
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/LLVM-17.0.6-win64.exe
   DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
+  GN_ARGS_BASE: |
+    target_cpu="x64"
+    is_official_build=true
+    is_component_build=false
+    is_debug=false
+    clang_win="C:/Program Files/LLVM"
+    cc="clang-cl"
+    cxx="clang-cl"
+    extra_cflags=["/MT"]   # Release 用 /MT，Debug 用 /MTd
+    skia_use_system_libjpeg=true
+    skia_use_system_libpng=true
+    skia_use_system_zlib=true
+    skia_use_system_freetype2=false
+    skia_use_system_harfbuzz=false
+    skia_use_system_webp=false
+    skia_enable_svg=true
+    skia_enable_skottie=true
+    skia_enable_skshaper=true
+    skia_enable_paragraph=true
+    skia_enable_effects=true
+    skia_enable_filters=true
+    skia_use_expat=true
+    skia_use_system_expat=false
+    skia_use_icu=false
+    skia_use_xps=false
+    skia_enable_gpu=false
+    skia_use_angle=false
 
 jobs:
   build:
     runs-on: windows-2022
     strategy:
-      fail-fast: false
       matrix:
         config: [Release, Debug]
-
     steps:
-      # ---- 1. 拉源码 ----
       - name: Checkout Skia
         run: |
-          git clone https://skia.googlesource.com/skia.git skia
+          git clone https://skia.googlesource.com/skia.git  skia
           cd skia
           git checkout chrome/${{ env.SKIA_VERSION }}
 
-      # ---- 2. 装 LLVM-17 ----
       - name: Install LLVM
         run: |
           curl -Lo llvm.exe ${{ env.LLVM_URL }}
           7z x llvm.exe -o"C:\Program Files\LLVM" -y
           echo "C:\Program Files\LLVM\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
-      # ---- 3. 装 Depot Tools ----
       - name: Install Depot Tools
         run: |
           curl -Lo depot_tools.zip ${{ env.DEPOT_TOOLS_URL }}
           7z x depot_tools.zip -o"C:\depot_tools" -y
           echo "C:\depot_tools" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
-      # ---- 4. 只拉 Windows 依赖（避开 emsdk） ----
-      - name: Sync dependencies
+      - name: Sync third-party
         working-directory: skia
-        run: python tools/git-sync-deps --deps-target=win
+        run: python tools/git-sync-deps --deps-target=win   # 只拉 Windows 依赖
 
-      # ---- 5. 生成 GN 参数 ----
-      - name: Generate args.gn
+      - name: Generate GN args
         shell: pwsh
         working-directory: skia
         run: |
-          $gn = @'
-          target_cpu="x64"
-          is_official_build=true
-          is_component_build=false
-          clang_win="C:/Program Files/LLVM"
-          cc="clang-cl"
-          cxx="clang-cl"
-          extra_cflags=["/MT"]
-          skia_use_system_libjpeg=true
-          skia_use_system_libpng=true
-          skia_use_system_zlib=true
-          skia_use_system_freetype2=false
-          skia_use_system_harfbuzz=false
-          skia_use_system_webp=false
-          skia_enable_svg=true
-          skia_enable_skottie=true
-          skia_enable_skshaper=true
-          skia_enable_paragraph=true
-          skia_enable_effects=true
-          skia_enable_filters=true
-          skia_use_expat=true
-          skia_use_system_expat=false
-          skia_use_icu=false
-          skia_use_xps=false
-          skia_enable_gpu=false
-          skia_use_angle=false
-          '@
+          $args = "${{ env.GN_ARGS_BASE }}"
           if ("${{ matrix.config }}" -eq "Debug") {
-            $gn = $gn.Replace('extra_cflags=["/MT"]','extra_cflags=["/MTd"]')
-                     .Replace("is_debug=false","is_debug=true")
+            $args = $args.Replace('is_debug=false','is_debug=true')
+                         .Replace('extra_cflags=["/MT"]','extra_cflags=["/MTd"]')
           }
           New-Item -ItemType Directory -Force -Path "out/${{ matrix.config }}"
-          $gn | Out-File -FilePath "out/${{ matrix.config }}/args.gn" -Encoding utf8
+          $args | Out-File -FilePath "out/${{ matrix.config }}/args.gn" -Encoding utf8
 
-      # ---- 6. GN gen & ninja ----
       - name: GN gen
         working-directory: skia
         run: gn gen out/${{ matrix.config }}
@@ -94,29 +87,32 @@ jobs:
         working-directory: skia
         run: ninja -C out/${{ matrix.config }} skia
 
-      # ---- 7. 收集产物 ----
       - name: Collect artifacts
         shell: pwsh
         working-directory: skia
         run: |
           $dst = "${{ github.workspace }}/skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}"
-          New-Item -ItemType Directory -Force "$dst/include","$dst/lib"
-          robocopy include "$dst/include" /E /NP /NFL /NDL >$null
+          New-Item -ItemType Directory -Force -Path "$dst/include"
+          New-Item -ItemType Directory -Force -Path "$dst/lib"
+          # 头文件
+          robocopy include "$dst/include" /E /NP /NFL /NDL >nul
+          # 静态库
           Copy-Item out/${{ matrix.config }}/*.lib "$dst/lib"
+          # 记录 args.gn 备查
           Copy-Item out/${{ matrix.config }}/args.gn "$dst"
+          # LICENSE
           Copy-Item LICENSE "$dst"
+          # 打包
           7z a -tzip "${dst}.zip" "$dst/*"
 
-      # ---- 8. 上传 ----
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}
           path: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
 
-      # ---- 9. Release（仅打 tag 时） ----
       - name: Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v1
         with:
           files: skia-${{ env.SKIA_VERSION }}-windows-x64-${{ matrix.config }}.zip
