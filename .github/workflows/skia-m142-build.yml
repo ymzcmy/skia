@@ -256,13 +256,44 @@ jobs:
           # 确保目标目录存在
           New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
+          New-Item -Path "$dst\modules" -ItemType Directory -Force | Out-Null
+          New-Item -Path "$dst\third_party" -ItemType Directory -Force | Out-Null
           
-          # 复制 Skia 头文件
-          Write-Host "📦 复制 Skia 头文件到 $dst\include..."
+          # 复制 Skia 头文件 (主要头文件)
+          Write-Host "📦 复制 Skia 主要头文件到 $dst\include..."
           robocopy "include" "$dst\include" /E /R:1 /W:1
           if ($LASTEXITCODE -gt 7) {
-            Write-Error "❌ 头文件复制失败！退出码: $LASTEXITCODE"
+            Write-Error "❌ 主要头文件复制失败！退出码: $LASTEXITCODE"
             exit $LASTEXITCODE
+          }
+          
+          # 复制模块头文件 (包括 skcms 等关键模块)
+          Write-Host "📦 复制 Skia 模块头文件到 $dst\modules..."
+          robocopy "modules" "$dst\modules" /E /XD "skresources" "skottie" "skparagraph" "skshaper" "svg" /XF "*.cpp" "*.cc" "*.c" "*.bat" "*.py" "*.md" "*.txt" "*.gitignore" /R:1 /W:1
+          if ($LASTEXITCODE -gt 7) {
+            Write-Error "❌ 模块头文件复制失败！退出码: $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          
+          # 确保 skcms 头文件被包含 (特别重要)
+          if (Test-Path "modules/skcms") {
+            New-Item -Path "$dst\modules\skcms" -ItemType Directory -Force | Out-Null
+            robocopy "modules/skcms" "$dst\modules\skcms" /E /XF "*.cpp" "*.cc" "*.c" "*.bat" "*.py" "*.md" "*.txt" "*.gitignore" /R:1 /W:1
+            if ($LASTEXITCODE -gt 7) {
+              Write-Error "❌ skcms 头文件复制失败！退出码: $LASTEXITCODE"
+              exit $LASTEXITCODE
+            }
+          }
+          
+          # 复制必要的第三方头文件
+          Write-Host "📦 复制必要的第三方头文件到 $dst\third_party..."
+          # 只复制必要的第三方头文件，避免复制过多文件
+          $thirdPartyDirs = @("externals", "icu", "libgifcodec", "dawn", "skcms")
+          foreach ($dir in $thirdPartyDirs) {
+            if (Test-Path "third_party/$dir") {
+              New-Item -Path "$dst\third_party\$dir" -ItemType Directory -Force | Out-Null
+              robocopy "third_party/$dir" "$dst\third_party\$dir" /E /XF "*.cpp" "*.cc" "*.c" "*.bat" "*.py" "*.md" "*.txt" "*.gitignore" "*.cmake" /R:1 /W:1
+            }
           }
           
           # 复制库文件、配置文件和许可证
