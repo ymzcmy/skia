@@ -9,10 +9,9 @@ on:
 
 env:
   SKIA_VERSION: m142
-  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe         
-  DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip         
+  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe
+  DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip
   LLVM_PATH: C:/LLVM
-  # 配置调整：启用系统静态库 + 指定 vcpkg 路径
   GN_ARGS_BASE: |
     target_cpu="x64"
     is_component_build=false
@@ -152,6 +151,8 @@ jobs:
           
           $env:Path += ";$installPath\bin"
           [System.Environment]::SetEnvironmentVariable("Path", $env:Path, "Machine")
+          Write-Host "clang-cl version:"
+          clang-cl --version
 
       - name: 创建 emsdk 防御脚本
         shell: pwsh
@@ -160,8 +161,10 @@ jobs:
           $binPath = Join-Path -Path $pwd -ChildPath "bin"
           if (-not (Test-Path $binPath)) {
             New-Item -ItemType Directory -Path $binPath -Force | Out-Null
+            Write-Host "📁 创建 bin 目录: $binPath"
           }
           
+          # 创建防御性脚本
           $pyContent = "import sys`r`nsys.exit(0)"
           $pyPath = Join-Path $binPath "activate-emsdk"
           [System.IO.File]::WriteAllText($pyPath, $pyContent)
@@ -174,11 +177,7 @@ jobs:
           $ps1Path = Join-Path $binPath "activate-emsdk.ps1"
           [System.IO.File]::WriteAllText($ps1Path, $ps1Content)
           
-          & python $pyPath
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          & cmd /c $batPath
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          
+          Write-Host "✅ 创建 emsdk 防御脚本"
           [Environment]::SetEnvironmentVariable("NO_EMSCRIPTEN", "1", "Process")
 
       - name: 同步第三方依赖
@@ -196,6 +195,7 @@ jobs:
             Write-Error "依赖同步失败! 退出码: $LASTEXITCODE"
             exit $LASTEXITCODE
           }
+          Write-Host "✅ 依赖同步成功"
 
       - name: 生成 GN 构建参数
         shell: pwsh
@@ -207,9 +207,14 @@ jobs:
           $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
           $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
           
+          if (-not (Test-Path $vcpkgInclude)) {
+            Write-Error "vcpkg 头文件路径不存在: $vcpkgInclude"
+            exit 1
+          }
+          
           $gnArgs = $env:GN_ARGS_BASE
           
-          # 关键修复: 添加 vcpkg 路径和全静态链接选项
+          # 关键修复: 添加 vcpkg 路径
           $gnArgs += "`n`nvcpkg_root_dir=`"$vcpkgRoot`"`n"
           $gnArgs += "`nvcpkg_triplet=`"$vcpkgTriplet`"`n"
           $gnArgs += "`n`nextra_cflags = [""-I$vcpkgInclude""]`n"
@@ -229,10 +234,12 @@ jobs:
           
           $argsPath = Join-Path -Path $outDir -ChildPath "args.gn"
           [System.IO.File]::WriteAllText($argsPath, $gnArgs)
+          Write-Host "✅ GN 参数已生成: $argsPath"
 
       - name: 用 GN 生成构建文件
         working-directory: skia
         run: |
+          Write-Host "🔧 用 GN 生成构建文件..."
           gn gen "out/${{ matrix.config }}"
 
       - name: 用 Ninja 编译
@@ -251,19 +258,15 @@ jobs:
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           
           # 复制 Skia 头文件
-          $logPath = Join-Path $dst "robocopy_include.log"
-          robocopy "include" "$dst\include" /E /R:1 /W:1 /LOG+:$logPath
-          $robocopyExitCode = $LASTEXITCODE
-          
-          # 正确处理 robocopy 退出码
-          if ($robocopyExitCode -gt 7) {
-            Write-Error "❌ 头文件复制失败！退出码: $robocopyExitCode"
-            Get-Content $logPath | Write-Host
-            exit 1
+          Write-Host "📦 复制 Skia 头文件到 $dst\include..."
+          robocopy "include" "$dst\include" /E /R:1 /W:1
+          if ($LASTEXITCODE -gt 7) {
+            Write-Error "❌ 头文件复制失败！退出码: $LASTEXITCODE"
+            exit $LASTEXITCODE
           }
           
           # 复制库文件、配置文件和许可证
-          Write-Host "📦 复制库文件..."
+          Write-Host "📦 复制 Skia 库文件..."
           Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
           Write-Host "📦 复制构建配置..."
           Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
@@ -271,18 +274,25 @@ jobs:
           Copy-Item "LICENSE" -Destination "$dst" -Force
           
           # 压缩产物
-          Write-Host "📦 压缩产物到 ${dst}.zip..."
-          Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
-          Write-Host "✅ 产物收集完成！"
+          $zipPath = "${{ github.workspace }}\skia-m142-windows-x64-static-$config.zip"
+          Write-Host "📦 压缩产物到 $zipPath..."
+          Compress-Archive -Path "$dst\*" -DestinationPath $zipPath -Force
           
-          # 关键修复：确保脚本以 0 退出
-          exit 0  # 显式设置退出码为 0
+          if (Test-Path $zipPath) {
+            $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
+            Write-Host "✅ 产物已打包: $zipPath (大小: $sizeMB MB)"
+          } else {
+            Write-Error "❌ 产物压缩文件不存在: $zipPath"
+            exit 1
+          }
+          
+          exit 0
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}
-          path: ${{ github.workspace }}/skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
+          path: ${{ github.workspace }}/skia-m142-windows-x64-static-${{ matrix.config }}.zip
 
       - name: 上传到 Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142'
@@ -314,10 +324,11 @@ jobs:
               - freetype (静态)
             
             > 此构建针对 Windows x64 平台，使用 vcpkg 安装所有依赖并完全静态链接
+          # 关键修复：使用正确参数确保覆盖
+          overwrite: true
           files: |
             ${{ github.workspace }}/skia-m142-windows-x64-static-Release.zip
             ${{ github.workspace }}/skia-m142-windows-x64-static-Debug.zip
-          replace_existing: true
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
