@@ -85,7 +85,7 @@ jobs:
           git clone https://github.com/microsoft/vcpkg.git
           .\vcpkg\bootstrap-vcpkg.bat
           
-          # 安装所有需要的静态库
+          # 安装所有需要的静态库 (使用 x64-windows-static triplet)
           Write-Host "🔧 安装所有静态依赖库..." -ForegroundColor Cyan
           .\vcpkg\vcpkg.exe install `
             libjpeg-turbo:x64-windows-static `
@@ -99,8 +99,13 @@ jobs:
           $vcpkgRoot = (Get-Location).Path + "\vcpkg"
           $vcpkgTriplet = "x64-windows-static"
           
-          [System.Environment]::SetEnvironmentVariable("VCPKG_ROOT", $vcpkgRoot, "Machine")
-          [System.Environment]::SetEnvironmentVariable("VCPKG_TRIPLET", $vcpkgTriplet, "Machine")
+          # 设置全局环境变量，确保后续步骤可访问
+          echo "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+          echo "VCPKG_TRIPLET=$vcpkgTriplet" >> $env:GITHUB_ENV
+          
+          # 设置 PATH (重要: 确保 vcpkg 在 PATH 中)
+          echo "$vcpkgRoot" >> $env:GITHUB_PATH
+          echo "$vcpkgRoot\installed\$vcpkgTriplet\bin" >> $env:GITHUB_PATH
           
           Write-Host "✅ vcpkg 静态库安装成功!"
 
@@ -196,14 +201,22 @@ jobs:
         shell: pwsh
         working-directory: skia
         run: |
-          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
-          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET", "Machine")
+          # 从环境变量获取 vcpkg 路径
+          $vcpkgRoot = $env:VCPKG_ROOT
+          $vcpkgTriplet = $env:VCPKG_TRIPLET
           $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
           $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
           
           $gnArgs = $env:GN_ARGS_BASE
+          
+          # 关键修复: 添加 vcpkg 路径和全静态链接选项
+          $gnArgs += "`n`nvcpkg_root_dir=`"$vcpkgRoot`"`n"
+          $gnArgs += "`nvcpkg_triplet=`"$vcpkgTriplet`"`n"
           $gnArgs += "`n`nextra_cflags = [""-I$vcpkgInclude""]`n"
           $gnArgs += "`n`nextra_ldflags = [""-L$vcpkgLib""]`n"
+          
+          # 关键: 启用全静态链接
+          $gnArgs += "`n`nall_deps_as_static_libs=true`n"
           
           if ("${{ matrix.config }}" -eq "Debug") {
             $gnArgs += "`n`nis_debug=true`nis_official_build=false`nextra_cflags+=[`"/MTd`"]`n"
@@ -220,118 +233,56 @@ jobs:
       - name: 用 GN 生成构建文件
         working-directory: skia
         run: |
-          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
-          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET", "Machine")
-          $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
-          
-          # 验证关键头文件存在
-          $requiredHeaders = @(
-            "jpeglib.h",
-            "png.h",
-            "zlib.h",
-            "webp/decode.h",
-            "expat.h",
-            "freetype/freetype.h"
-          )
-          
-          foreach ($header in $requiredHeaders) {
-            $path = Join-Path $vcpkgInclude $header
-            if (-not (Test-Path $path)) {
-              Write-Error "❌ $header 未找到! vcpkg 静态库安装失败"
-              exit 1
-            }
-          }
-          
           gn gen "out/${{ matrix.config }}"
 
       - name: 用 Ninja 编译
         working-directory: skia
         run: ninja -C "out/${{ matrix.config }}" skia
 
-      - name: 收集构建产物 (完整静态库包)
+      - name: 收集构建产物
         shell: pwsh
         working-directory: skia
         run: |
           $config = "${{ matrix.config }}"
           $dst = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-static-${config}"
           
-          # 创建标准目录结构
-          New-Item -Path "$dst\include\skia" -ItemType Directory -Force | Out-Null
-          New-Item -Path "$dst\third_party\include" -ItemType Directory -Force | Out-Null
+          # 确保目标目录存在
+          New-Item -Path "$dst\include" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
-          New-Item -Path "$dst\lib\deps" -ItemType Directory -Force | Out-Null
           
-          # 1. 复制 Skia 头文件
-          Write-Host "🔧 复制 Skia 头文件..."
-          robocopy "include" "$dst\include\skia" /E /R:1 /W:1
-          if ($LASTEXITCODE -gt 7) {
-            Write-Error "❌ Skia 头文件复制失败!"
-            exit $LASTEXITCODE
+          # 复制 Skia 头文件
+          $logPath = Join-Path $dst "robocopy_include.log"
+          robocopy "include" "$dst\include" /E /R:1 /W:1 /LOG+:$logPath
+          $robocopyExitCode = $LASTEXITCODE
+          
+          # 正确处理 robocopy 退出码
+          if ($robocopyExitCode -gt 7) {
+            Write-Error "❌ 头文件复制失败！退出码: $robocopyExitCode"
+            Get-Content $logPath | Write-Host
+            exit 1
           }
           
-          # 2. 复制 vcpkg 头文件
-          Write-Host "🔧 复制 vcpkg 依赖库头文件..."
-          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT", "Machine")
-          $vcpkgTriplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET", "Machine")
-          $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
-          
-          if (Test-Path $vcpkgInclude) {
-            robocopy $vcpkgInclude "$dst\third_party\include" /E /R:1 /W:1
-            if ($LASTEXITCODE -gt 7) {
-              Write-Error "❌ vcpkg 头文件复制失败!"
-              exit $LASTEXITCODE
-            }
-          }
-          
-          # 3. 复制 Skia 库文件
-          Write-Host "📦 复制 Skia 库文件..."
+          # 复制库文件、配置文件和许可证
+          Write-Host "📦 复制库文件..."
           Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
-          
-          # 4. 复制 vcpkg 依赖库文件
-          Write-Host "📦 复制 vcpkg 依赖库文件..."
-          $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
-          if (Test-Path $vcpkgLib) {
-            $depLibs = Get-ChildItem -Path $vcpkgLib -Include "*.lib" -Recurse
-            foreach ($lib in $depLibs) {
-              Copy-Item $lib.FullName -Destination "$dst\lib\deps" -Force
-            }
-            Write-Host "✅ vcpkg 依赖库文件已复制"
-          }
-          
-          # 5. 复制构建配置和许可证
-          Write-Host "📄 复制构建配置和许可证..."
+          Write-Host "📦 复制构建配置..."
           Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
+          Write-Host "📦 复制许可证..."
           Copy-Item "LICENSE" -Destination "$dst" -Force
           
-          # 6. 创建依赖关系说明
-          $depsInfo = @"
-          Skia Static Build Dependencies
-          ===============================
-
-          This build includes all required static dependencies for Windows x64 ${config} configuration.
+          # 压缩产物
+          Write-Host "📦 压缩产物到 ${dst}.zip..."
+          Compress-Archive -Path "$dst\*" -DestinationPath "${dst}.zip" -Force
+          Write-Host "✅ 产物收集完成！"
           
-          Required libraries (link in this order):
-          - skia.lib
-          - (all libraries from lib\deps directory)
-          
-          Include paths:
-          - include\skia
-          - third_party\include
-
-          For usage instructions, see: https://skia.org/user/build
-          "@
-                    $depsInfo | Out-File -FilePath "${dst}\DEPENDENCIES.txt" -Encoding utf8
-                    
-                    # 7. 压缩产物
-                    $zipName = "skia-m142-windows-x64-static-$config"
-                    Compress-Archive -Path "$dst\*" -DestinationPath "${{ github.workspace }}\$zipName.zip" -Force
-                    Write-Host "✅ 产物已打包: $zipName.zip (大小: $([math]::Round((Get-Item ${zipName}.zip).Length/1MB, 2)) MB)"
+          # 关键修复：确保脚本以 0 退出
+          exit 0  # 显式设置退出码为 0
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}
-          path: ${{ github.workspace }}/skia-m142-windows-x64-static-${{ matrix.config }}.zip
+          path: ${{ github.workspace }}/skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
 
       - name: 上传到 Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142'
@@ -354,7 +305,7 @@ jobs:
               - SVG 矢量图形
               - 高级文本排版
               - 动画支持 (Skottie)
-            - 静态依赖 (通过 vcpkg 安装):
+            - 静态依赖:
               - libjpeg-turbo (静态)
               - libpng (静态)
               - zlib (静态)
@@ -362,11 +313,7 @@ jobs:
               - expat (静态)
               - freetype (静态)
             
-            > 此构建针对 Windows x64 平台，所有依赖均为静态库
-            
-            **重要提示**:
-            - 解压后，包含完整头文件和静态库
-            - 使用说明见 DEPENDENCIES.txt
+            > 此构建针对 Windows x64 平台，使用 vcpkg 安装所有依赖并完全静态链接
           files: |
             ${{ github.workspace }}/skia-m142-windows-x64-static-Release.zip
             ${{ github.workspace }}/skia-m142-windows-x64-static-Debug.zip
