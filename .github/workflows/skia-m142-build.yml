@@ -9,8 +9,8 @@ on:
 
 env:
   SKIA_VERSION: m142
-  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe     
-  DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip     
+  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe       
+  DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip       
   LLVM_PATH: C:/LLVM
   # 配置调整：启用系统静态库 + 指定 vcpkg 路径
   GN_ARGS_BASE: |
@@ -62,7 +62,7 @@ jobs:
     steps:
       - name: Checkout Skia (from own repo)
         run: |
-          git clone https://github.com/ymzcmy/skia.git    skia
+          git clone https://github.com/ymzcmy/skia.git      skia
           cd skia
           git checkout chrome/${{ env.SKIA_VERSION }}
           git submodule update --init --recursive
@@ -82,7 +82,7 @@ jobs:
         run: |
           # 安装 vcpkg
           Write-Host "📦 安装 vcpkg 包管理器..." -ForegroundColor Cyan
-          git clone https://github.com/microsoft/vcpkg.git     
+          git clone https://github.com/microsoft/vcpkg.git       
           .\vcpkg\bootstrap-vcpkg.bat
           
           # 安装所有需要的静态库（triplet 改为 x64-windows-static）
@@ -342,18 +342,18 @@ jobs:
           # 关键修复：确保脚本以 0 退出
           exit 0  # 显式设置退出码为 0
 
-      - name: 上传构建产物
+      # ===== 上传所有构建产物 (Debug & Release) =====
+      - name: 📦 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}
-          path: skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
+          path: ${{ github.workspace }}/skia-${{ env.SKIA_VERSION }}-windows-x64-static-${{ matrix.config }}.zip
 
-      # ===== 关键修复：直接使用已存在的标签 =====
-      - name: 🚀 上传到 Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142' && matrix.config == 'Release'
+      # ===== 关键修复：上传 Release 和 Debug 都到 Release 页面 =====
+      - name: 🚀 上传到 Release (Release + Debug)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/chrome/m142'
         uses: softprops/action-gh-release@v2
         with:
-          # 直接使用已存在的标签（从截图中确认）
           tag_name: m142-windows-x64-release
           name: ${{ env.RELEASE_NAME }}
           prerelease: false
@@ -380,7 +380,10 @@ jobs:
               - freetype (静态)
             
             > 此构建针对 Windows x64 平台，所有依赖均为静态库
-          files: ${{ github.workspace }}/skia-m142-windows-x64-static-Release.zip
+          # 关键修复：确保上传 Release 和 Debug 两个文件
+          files: |
+            ${{ github.workspace }}/skia-m142-windows-x64-static-Release.zip
+            ${{ github.workspace }}/skia-m142-windows-x64-static-Debug.zip
           replace_existing: true
           generate_release_notes: false
         env:
