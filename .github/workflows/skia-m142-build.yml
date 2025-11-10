@@ -1,4 +1,4 @@
-name: Build Skia m142 (Windows x64 Static, LLVM + vcpkg Static Libs)
+name: Build Skia m142 (Windows x64 Static, LLVM with built-in dependencies)
 
 on:
   push:
@@ -19,14 +19,14 @@ env:
     cc="clang-cl"
     cxx="clang-cl"
     
-    # 启用系统静态库（vcpkg 提供）
-    skia_use_system_libjpeg=true
+    # 使用 Skia 内置依赖 (不再使用 vcpkg)
+    skia_use_system_libjpeg=false
     skia_use_libjpeg_turbo=true
-    skia_use_system_libpng=true
-    skia_use_system_zlib=true
-    skia_use_system_webp=true
-    skia_use_system_expat=true
-    skia_use_system_freetype2=true
+    skia_use_system_libpng=false
+    skia_use_system_zlib=false
+    skia_use_system_webp=false
+    skia_use_system_expat=false
+    skia_use_system_freetype2=false
     
     # 颜色管理模块
     skia_use_skcms=true
@@ -60,7 +60,7 @@ env:
     skia_use_dng_sdk=false
     skia_use_sfntly=false
     
-    # 确保链接正确的 CRT
+    # 确保正确链接 CRT
     is_clang=true
     win_vc=""
     
@@ -88,41 +88,6 @@ jobs:
           cd C:\depot_tools
           git checkout main
           git pull
-
-      # ===== 安装所有系统依赖库（静态库）=====
-      - name: Install vcpkg and all static dependencies
-        shell: pwsh
-        run: |
-          # 安装 vcpkg
-          Write-Host "📦 安装 vcpkg 包管理器..." -ForegroundColor Cyan
-          git clone https://github.com/microsoft/vcpkg.git        
-          .\vcpkg\bootstrap-vcpkg.bat
-          
-          # 安装所有需要的静态库 (使用 x64-windows-static triplet)
-          Write-Host "🔧 安装所有静态依赖库..." -ForegroundColor Cyan
-          .\vcpkg\vcpkg.exe install `
-            libjpeg-turbo:x64-windows-static `
-            libpng:x64-windows-static `
-            zlib:x64-windows-static `
-            libwebp:x64-windows-static `
-            expat:x64-windows-static `
-            freetype:x64-windows-static `
-            icu:x64-windows-static `
-            harfbuzz:x64-windows-static
-          
-          # 设置环境变量
-          $vcpkgRoot = (Get-Location).Path + "\vcpkg"
-          $vcpkgTriplet = "x64-windows-static"
-          
-          # 设置全局环境变量，确保后续步骤可访问
-          echo "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
-          echo "VCPKG_TRIPLET=$vcpkgTriplet" >> $env:GITHUB_ENV
-          
-          # 设置 PATH (重要: 确保 vcpkg 在 PATH 中)
-          echo "$vcpkgRoot" >> $env:GITHUB_PATH
-          echo "$vcpkgRoot\installed\$vcpkgTriplet\bin" >> $env:GITHUB_PATH
-          
-          Write-Host "✅ vcpkg 静态库安装成功!"
 
       - name: Initialize depot_tools
         run: |
@@ -217,44 +182,16 @@ jobs:
         shell: pwsh
         working-directory: skia
         run: |
-          # 从环境变量获取 vcpkg 路径
-          $vcpkgRoot = $env:VCPKG_ROOT
-          $vcpkgTriplet = $env:VCPKG_TRIPLET
-          $vcpkgInclude = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
-          $vcpkgLib = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
-          
-          if (-not (Test-Path $vcpkgInclude)) {
-            Write-Error "vcpkg 头文件路径不存在: $vcpkgInclude"
-            exit 1
-          }
-          
           $gnArgs = $env:GN_ARGS_BASE
           
-          # 添加 vcpkg 路径和额外编译/链接标志
-          $gnArgs += "`n`nvcpkg_root_dir=`"$vcpkgRoot`"`n"
-          $gnArgs += "`nvcpkg_triplet=`"$vcpkgTriplet`"`n"
-          
-          $gnArgs += "`nextra_cflags = ["
-          $gnArgs += "`"-I$vcpkgInclude`", "
-          $gnArgs += "`"-I$vcpkgInclude/freetype2`""
-          $gnArgs += "`n]`n"
-          
-          $gnArgs += "`nextra_ldflags = ["
-          $gnArgs += "`"-LIBPATH:$vcpkgLib`""
-          $gnArgs += "`n]`n"
-          
-          # 启用全静态链接
-          $gnArgs += "`nall_deps_as_static_libs=true`n"
+          # 确保完全静态链接
+          $gnArgs += "`n`nall_deps_as_static_libs=true`n"
           
           # 设置正确的 CRT 链接
           if ("${{ matrix.config }}" -eq "Debug") {
-            $gnArgs += "`nis_debug=true`n"
-            $gnArgs += "`nis_official_build=false`n"
-            $gnArgs += "`nextra_cflags += [`"/MTd`"]`n"
+            $gnArgs += "`nis_debug=true`nis_official_build=false`nextra_cflags+=[`"/MTd`"]`n"
           } else {
-            $gnArgs += "`nis_debug=false`n"
-            $gnArgs += "`nis_official_build=true`n"
-            $gnArgs += "`nextra_cflags += [`"/MT`"]`n"
+            $gnArgs += "`nis_debug=false`nis_official_build=true`nextra_cflags+=[`"/MT`"]`n"
           }
           
           $outDir = "out\${{ matrix.config }}"
@@ -286,7 +223,6 @@ jobs:
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\modules" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\third_party" -ItemType Directory -Force | Out-Null
-          New-Item -Path "$dst\deps" -ItemType Directory -Force | Out-Null
           
           # 复制 Skia 主要头文件
           Write-Host "📦 复制 Skia 主要头文件到 $dst\include..."
@@ -311,8 +247,8 @@ jobs:
             }
           }
           
-          # 复制必要的第三方头文件
-          $thirdPartyDirs = @("icu", "dawn")
+          # 复制必要的第三方头文件 (Skia 内置的依赖)
+          $thirdPartyDirs = @("icu", "libpng", "zlib", "libjpeg-turbo", "libwebp", "expat", "freetype2", "harfbuzz", "dawn", "skcms")
           foreach ($dir in $thirdPartyDirs) {
             $srcPath = "third_party/$dir"
             if (Test-Path $srcPath) {
@@ -326,55 +262,9 @@ jobs:
             }
           }
           
-          # 🚀 关键修复：复制 vcpkg 安装的第三方库头文件
-          Write-Host "🔧 复制 vcpkg 安装的第三方库头文件..."
-          $vcpkgRoot = $env:VCPKG_ROOT
-          $vcpkgTriplet = $env:VCPKG_TRIPLET
-          $vcpkgIncludeDir = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
-          
-          # 创建 deps/include 目录来存放第三方头文件
-          $depsIncludeDir = "$dst\deps\include"
-          New-Item -Path $depsIncludeDir -ItemType Directory -Force | Out-Null
-          
-          # 复制所有 vcpkg 安装的头文件
-          Write-Host "  复制 vcpkg 所有头文件到 $depsIncludeDir..."
-          robocopy $vcpkgIncludeDir $depsIncludeDir /E /XF "*.cmake" "*.pc" "*.la" "*.a" "*.lib" "*.dll" "*.exe" "*.bat" "*.py" /R:1 /W:1
-          if ($LASTEXITCODE -gt 7) {
-            Write-Warning "vcpkg 头文件复制警告！退出码: $LASTEXITCODE"
-          }
-          
-          # 特别处理 freetype2 头文件 (通常需要特殊目录结构)
-          $freetypeInclude = Join-Path $vcpkgIncludeDir "freetype2"
-          if (Test-Path $freetypeInclude) {
-            $freetypeDest = "$depsIncludeDir\freetype2"
-            New-Item -Path $freetypeDest -ItemType Directory -Force | Out-Null
-            robocopy $freetypeInclude $freetypeDest /E /R:1 /W:1
-          }
-          
           # 复制 Skia 库文件
           Write-Host "📦 复制 Skia 库文件..."
           Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
-          
-          # 复制 vcpkg 安装的第三方静态库
-          Write-Host "🔧 复制 vcpkg 安装的第三方静态库..."
-          $vcpkgLibDir = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
-          
-          # 复制 debug 或 release 版本的库
-          $suffix = if ($config -eq "Debug") { "d" } else { "" }
-          
-          # 定义需要复制的库
-          $requiredLibs = @(
-            "*png*${suffix}.lib", "*zlib*${suffix}.lib", "*jpeg*${suffix}.lib", "*webp*${suffix}.lib", 
-            "*expat*${suffix}.lib", "*freetype*${suffix}.lib", "*icu*${suffix}.lib", "*harfbuzz*${suffix}.lib"
-          )
-          
-          foreach ($lib in $requiredLibs) {
-            $libFiles = Get-ChildItem -Path $vcpkgLibDir -Include $lib -Recurse
-            foreach ($file in $libFiles) {
-              Copy-Item $file.FullName -Destination "$dst\lib\" -Force
-              Write-Host "  ✅ 复制: $($file.Name)"
-            }
-          }
           
           # 复制构建配置和许可证
           Write-Host "📦 复制构建配置..."
@@ -425,23 +315,22 @@ jobs:
               - 高级文本排版
               - 动画支持 (Skottie)
               - 颜色管理 (SkCMS)
-            - 静态依赖库:
-              - libjpeg-turbo (静态)
-              - libpng (静态)
-              - zlib (静态)
-              - libwebp (静态)
-              - expat (静态)
-              - freetype (静态)
-              - ICU (静态)
-              - HarfBuzz (静态)
+            - 依赖处理:
+              - 使用 Skia 内置的所有依赖 (不再依赖 vcpkg)
+              - 完全静态链接所有组件
+              - 无需额外安装依赖包
             
-            **包含内容**:
-            - Skia 主要头文件 (`include/`)
-            - 模块头文件 (`modules/`)
-            - 第三方库头文件 (`deps/include/`)
-            - 所有静态库文件 (`lib/`)
+            **包含的第三方组件**:
+            - libjpeg-turbo (内置)
+            - libpng (内置)
+            - zlib (内置)
+            - libwebp (内置)
+            - expat (内置)
+            - freetype2 (内置)
+            - ICU (内置)
+            - HarfBuzz (内置)
             
-            > 此构建针对 Windows x64 平台，使用 vcpkg 安装所有依赖并完全静态链接
+            > 此构建针对 Windows x64 平台，完全静态链接，无需外部依赖
           overwrite: true
           files: |
             ${{ github.workspace }}/skia-m142-windows-x64-static-Release.zip
