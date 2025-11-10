@@ -9,8 +9,8 @@ on:
 
 env:
   SKIA_VERSION: m142
-  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe      
-  DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip      
+  LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-win64.exe        
+  DEPOT_TOOLS_URL: https://storage.googleapis.com/chrome-infra/depot_tools.zip        
   LLVM_PATH: C:/LLVM
   GN_ARGS_BASE: |
     target_cpu="x64"
@@ -28,10 +28,10 @@ env:
     skia_use_system_expat=true
     skia_use_system_freetype2=true
     
-    # 颜色管理模块 (必须显式启用)
+    # 颜色管理模块
     skia_use_skcms=true
     
-    # 文本处理模块 (必须显式启用)
+    # 文本处理模块
     skia_use_harfbuzz=true
     skia_use_skunicode=true
     
@@ -51,7 +51,7 @@ env:
     skia_enable_effects=true
     skia_enable_filters=true
     
-    # 冗余功能裁剪 (显式禁用不需要的模块)
+    # 冗余功能裁剪
     skia_use_xps=false
     skia_enable_pdf=false
     skia_enable_flutter_defines=false
@@ -59,6 +59,10 @@ env:
     skia_enable_spirv_validation=false
     skia_use_dng_sdk=false
     skia_use_sfntly=false
+    
+    # 确保链接正确的 CRT
+    is_clang=true
+    win_vc=""
     
   RELEASE_NAME: "Skia-m142-Nightly-Windows-Static"
 
@@ -71,7 +75,7 @@ jobs:
     steps:
       - name: Checkout Skia (from own repo)
         run: |
-          git clone https://github.com/ymzcmy/skia.git       skia
+          git clone https://github.com/ymzcmy/skia.git         skia
           cd skia
           git checkout chrome/${{ env.SKIA_VERSION }}
           git submodule update --init --recursive
@@ -91,7 +95,7 @@ jobs:
         run: |
           # 安装 vcpkg
           Write-Host "📦 安装 vcpkg 包管理器..." -ForegroundColor Cyan
-          git clone https://github.com/microsoft/vcpkg.git      
+          git clone https://github.com/microsoft/vcpkg.git        
           .\vcpkg\bootstrap-vcpkg.bat
           
           # 安装所有需要的静态库 (使用 x64-windows-static triplet)
@@ -102,7 +106,9 @@ jobs:
             zlib:x64-windows-static `
             libwebp:x64-windows-static `
             expat:x64-windows-static `
-            freetype:x64-windows-static
+            freetype:x64-windows-static `
+            icu:x64-windows-static `
+            harfbuzz:x64-windows-static
           
           # 设置环境变量
           $vcpkgRoot = (Get-Location).Path + "\vcpkg"
@@ -224,19 +230,31 @@ jobs:
           
           $gnArgs = $env:GN_ARGS_BASE
           
-          # 关键修复: 添加 vcpkg 路径
+          # 添加 vcpkg 路径和额外编译/链接标志
           $gnArgs += "`n`nvcpkg_root_dir=`"$vcpkgRoot`"`n"
           $gnArgs += "`nvcpkg_triplet=`"$vcpkgTriplet`"`n"
-          $gnArgs += "`n`nextra_cflags = [""-I$vcpkgInclude""]`n"
-          $gnArgs += "`n`nextra_ldflags = [""-L$vcpkgLib""]`n"
           
-          # 关键: 启用全静态链接
-          $gnArgs += "`n`nall_deps_as_static_libs=true`n"
+          $gnArgs += "`nextra_cflags = ["
+          $gnArgs += "`"-I$vcpkgInclude`", "
+          $gnArgs += "`"-I$vcpkgInclude/freetype2`""
+          $gnArgs += "`n]`n"
           
+          $gnArgs += "`nextra_ldflags = ["
+          $gnArgs += "`"-LIBPATH:$vcpkgLib`""
+          $gnArgs += "`n]`n"
+          
+          # 启用全静态链接
+          $gnArgs += "`nall_deps_as_static_libs=true`n"
+          
+          # 设置正确的 CRT 链接
           if ("${{ matrix.config }}" -eq "Debug") {
-            $gnArgs += "`n`nis_debug=true`nis_official_build=false`nextra_cflags+=[`"/MTd`"]`n"
+            $gnArgs += "`nis_debug=true`n"
+            $gnArgs += "`nis_official_build=false`n"
+            $gnArgs += "`nextra_cflags += [`"/MTd`"]`n"
           } else {
-            $gnArgs += "`n`nis_debug=false`nis_official_build=true`nextra_cflags+=[`"/MT`"]`n"
+            $gnArgs += "`nis_debug=false`n"
+            $gnArgs += "`nis_official_build=true`n"
+            $gnArgs += "`nextra_cflags += [`"/MT`"]`n"
           }
           
           $outDir = "out\${{ matrix.config }}"
@@ -268,6 +286,7 @@ jobs:
           New-Item -Path "$dst\lib" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\modules" -ItemType Directory -Force | Out-Null
           New-Item -Path "$dst\third_party" -ItemType Directory -Force | Out-Null
+          New-Item -Path "$dst\deps" -ItemType Directory -Force | Out-Null
           
           # 复制 Skia 主要头文件
           Write-Host "📦 复制 Skia 主要头文件到 $dst\include..."
@@ -277,7 +296,7 @@ jobs:
             exit $LASTEXITCODE
           }
           
-          # 复制模块头文件 (包括 skcms 等关键模块)
+          # 复制模块头文件
           $requiredModules = @("skcms", "skparagraph", "skshaper", "skottie", "svg", "particles")
           foreach ($module in $requiredModules) {
             $srcPath = "modules/$module"
@@ -285,31 +304,79 @@ jobs:
               $dstModulePath = "$dst\modules\$module"
               New-Item -Path $dstModulePath -ItemType Directory -Force | Out-Null
               Write-Host "📦 复制 $module 模块头文件到 $dstModulePath..."
-              robocopy $srcPath $dstModulePath /E /XF "*.cpp" "*.cc" "*.c" "*.bat" "*.py" "*.md" "*.txt" "*.gitignore" /R:1 /W:1
+              robocopy $srcPath $dstModulePath /E /XF "*.cpp" "*.cc" "*.c" "*.bat" "*.py" "*.md" "*.txt" "*.gitignore" "*.json" "*.cmake" /R:1 /W:1
               if ($LASTEXITCODE -gt 7) {
                 Write-Warning "$module 模块复制警告！退出码: $LASTEXITCODE"
               }
             }
           }
           
-          # 复制必要的第三方头文件（特别是 ICU）
-          $thirdPartyDirs = @("icu", "dawn", "skcms")
+          # 复制必要的第三方头文件
+          $thirdPartyDirs = @("icu", "dawn")
           foreach ($dir in $thirdPartyDirs) {
             $srcPath = "third_party/$dir"
             if (Test-Path $srcPath) {
               $dstPath = "$dst\third_party\$dir"
               New-Item -Path $dstPath -ItemType Directory -Force | Out-Null
               Write-Host "📦 复制 third_party/$dir 头文件到 $dstPath..."
-              robocopy $srcPath $dstPath /E /XF "*.cpp" "*.cc" "*.c" "*.bat" "*.py" "*.md" "*.txt" "*.gitignore" /R:1 /W:1
+              robocopy $srcPath $dstPath /E /XF "*.cpp" "*.cc" "*.c" "*.bat" "*.py" "*.md" "*.txt" "*.gitignore" "*.json" "*.cmake" /R:1 /W:1
               if ($LASTEXITCODE -gt 7) {
                 Write-Warning "third_party/$dir 复制警告！退出码: $LASTEXITCODE"
               }
             }
           }
           
-          # 复制库文件、配置文件和许可证
+          # 🚀 关键修复：复制 vcpkg 安装的第三方库头文件
+          Write-Host "🔧 复制 vcpkg 安装的第三方库头文件..."
+          $vcpkgRoot = $env:VCPKG_ROOT
+          $vcpkgTriplet = $env:VCPKG_TRIPLET
+          $vcpkgIncludeDir = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\include"
+          
+          # 创建 deps/include 目录来存放第三方头文件
+          $depsIncludeDir = "$dst\deps\include"
+          New-Item -Path $depsIncludeDir -ItemType Directory -Force | Out-Null
+          
+          # 复制所有 vcpkg 安装的头文件
+          Write-Host "  复制 vcpkg 所有头文件到 $depsIncludeDir..."
+          robocopy $vcpkgIncludeDir $depsIncludeDir /E /XF "*.cmake" "*.pc" "*.la" "*.a" "*.lib" "*.dll" "*.exe" "*.bat" "*.py" /R:1 /W:1
+          if ($LASTEXITCODE -gt 7) {
+            Write-Warning "vcpkg 头文件复制警告！退出码: $LASTEXITCODE"
+          }
+          
+          # 特别处理 freetype2 头文件 (通常需要特殊目录结构)
+          $freetypeInclude = Join-Path $vcpkgIncludeDir "freetype2"
+          if (Test-Path $freetypeInclude) {
+            $freetypeDest = "$depsIncludeDir\freetype2"
+            New-Item -Path $freetypeDest -ItemType Directory -Force | Out-Null
+            robocopy $freetypeInclude $freetypeDest /E /R:1 /W:1
+          }
+          
+          # 复制 Skia 库文件
           Write-Host "📦 复制 Skia 库文件..."
           Copy-Item "out\${config}\*.lib" -Destination "$dst\lib" -Force
+          
+          # 复制 vcpkg 安装的第三方静态库
+          Write-Host "🔧 复制 vcpkg 安装的第三方静态库..."
+          $vcpkgLibDir = Join-Path $vcpkgRoot "installed\$vcpkgTriplet\lib"
+          
+          # 复制 debug 或 release 版本的库
+          $suffix = if ($config -eq "Debug") { "d" } else { "" }
+          
+          # 定义需要复制的库
+          $requiredLibs = @(
+            "*png*${suffix}.lib", "*zlib*${suffix}.lib", "*jpeg*${suffix}.lib", "*webp*${suffix}.lib", 
+            "*expat*${suffix}.lib", "*freetype*${suffix}.lib", "*icu*${suffix}.lib", "*harfbuzz*${suffix}.lib"
+          )
+          
+          foreach ($lib in $requiredLibs) {
+            $libFiles = Get-ChildItem -Path $vcpkgLibDir -Include $lib -Recurse
+            foreach ($file in $libFiles) {
+              Copy-Item $file.FullName -Destination "$dst\lib\" -Force
+              Write-Host "  ✅ 复制: $($file.Name)"
+            }
+          }
+          
+          # 复制构建配置和许可证
           Write-Host "📦 复制构建配置..."
           Copy-Item "out\${config}\args.gn" -Destination "$dst" -Force
           Write-Host "📦 复制许可证..."
@@ -358,17 +425,23 @@ jobs:
               - 高级文本排版
               - 动画支持 (Skottie)
               - 颜色管理 (SkCMS)
-            - 静态依赖:
+            - 静态依赖库:
               - libjpeg-turbo (静态)
               - libpng (静态)
               - zlib (静态)
               - libwebp (静态)
               - expat (静态)
               - freetype (静态)
-              - ICU (内置，非系统版)
+              - ICU (静态)
+              - HarfBuzz (静态)
+            
+            **包含内容**:
+            - Skia 主要头文件 (`include/`)
+            - 模块头文件 (`modules/`)
+            - 第三方库头文件 (`deps/include/`)
+            - 所有静态库文件 (`lib/`)
             
             > 此构建针对 Windows x64 平台，使用 vcpkg 安装所有依赖并完全静态链接
-          # 关键修复：使用正确参数确保覆盖
           overwrite: true
           files: |
             ${{ github.workspace }}/skia-m142-windows-x64-static-Release.zip
