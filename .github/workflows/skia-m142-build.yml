@@ -302,7 +302,57 @@ jobs:
       - name: 用 Ninja 编译
         working-directory: skia
         run: ninja -C "out/${{ matrix.config }}" skia
+      # ===== 新增：用 vcpkg export 一次性导出全部 Release/Debug 依赖 =====
+      - name: 📦 导出 vcpkg 全量静态依赖（Release & Debug）
+        shell: pwsh
+        run: |
+          $vcpkgRoot = [System.Environment]::GetEnvironmentVariable("VCPKG_ROOT","Machine")
+          $triplet = [System.Environment]::GetEnvironmentVariable("VCPKG_TRIPLET","Machine")
+          $config  = "${{ matrix.config }}"
 
+          # 1. 导出当前 triplet 的全部 lib/include/cmake
+          Write-Host "🔧 开始 vcpkg export ..."
+          & "$vcpkgRoot\vcpkg.exe" export `
+            libpng libjpeg-turbo zlib libwebp expat freetype brotli pthread `
+            --triplet=$triplet `
+            --raw `
+            --output="vcpkg-${triplet}-${config}" `
+            --output-dir="$env:TMP"
+
+          # 2. 解开导出包
+          $zip = "$env:TMP\vcpkg-${triplet}-${config}.zip"
+          Expand-Archive -Path $zip -DestinationPath "$env:TMP\vcpkg-export" -Force
+
+          # 3. 准备拷贝目标
+          $dstBase = "${{ github.workspace }}\skia-${{ env.SKIA_VERSION }}-windows-x64-static-${config}"
+          $dstInc  = "$dstBase\third_party\include"
+          $dstLib  = "$dstBase\third_party\lib"
+          New-Item -ItemType Directory -Force -Path $dstInc, $dstLib | Out-Null
+
+          # 4. 拷头文件（Release/Debug 同一套头，直接覆盖即可）
+          $srcInc = "$env:TMP\vcpkg-export\include"
+          if (Test-Path $srcInc) {
+            robocopy $srcInc $dstInc /E /R:1 /W:1 /NP
+            if ($LASTEXITCODE -gt 7) { exit 1 }
+          }
+
+          # 5. 拷 .lib（区分 Release/Debug 同名文件）
+          $srcLib = "$env:TMP\vcpkg-export\lib"
+          if (Test-Path $srcLib) {
+            robocopy $srcLib $dstLib /E /R:1 /W:1 /NP
+            if ($LASTEXITCODE -gt 7) { exit 1 }
+          }
+
+          # 6. 可选：cmake 配置一并带走
+          $srcCMake = "$env:TMP\vcpkg-export\share"
+          if (Test-Path $srcCMake) {
+            $dstCMake = "$dstBase\third_party\share"
+            New-Item -ItemType Directory -Force -Path $dstCMake | Out-Null
+            robocopy $srcCMake $dstCMake /E /R:1 /W:1 /NP
+            if ($LASTEXITCODE -gt 7) { exit 1 }
+          }
+
+          Write-Host "✅ vcpkg 依赖导出完成"
       - name: 收集构建产物
         shell: pwsh
         working-directory: skia
